@@ -1,17 +1,53 @@
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 import streamlit as st
-
+import uuid
 
 from agentic_chatbot import chatbot
 
 st.title("Langraph Chatbot")
 
-config = {
-        "configurable":{"thread_id": "thread1"}
-    }
+def generate_thread_id():
+    return str(uuid.uuid4())
+
+def add_thread(thread_id):
+    if thread_id not in st.session_state["chat_threads"]:
+        st.session_state['chat_threads'].append(thread_id)                                   
+                                       
+
+def load_conversation(thread_id):
+    state = chatbot.get_state(config= {
+                                        "configurable": {
+                                            "thread_id": thread_id 
+                                        }
+                                    })
+    return state.values.get("messages", [])
+
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
 
+if 'chat_threads' not in st.session_state:
+    st.session_state['chat_threads'] = []
+
+if 'thread_id' not in st.session_state:
+    st.session_state['thread_id'] = generate_thread_id()
+    add_thread(st.session_state["thread_id"])
+    st.rerun()
+
+st.sidebar.title("Chat Threads")
+
+if st.sidebar.button("New Thread"):
+    st.session_state["thread_id"] = generate_thread_id()
+    st.session_state['message_history'] = []
+    add_thread(st.session_state["thread_id"])
+    st.rerun()
+    
+for thread_id in st.session_state['chat_threads'][::-1]:
+    if st.sidebar.button(f"Thread {thread_id}"):
+        st.session_state['thread_id'] = thread_id
+        tem_messages = load_conversation(thread_id)
+        st.session_state['message_history'] = [{"role": "user" if isinstance(msg, HumanMessage) else "assistant", "content": msg.content} for msg in tem_messages]
+        st.rerun()
+            
 for message in st.session_state['message_history']:
     with st.chat_message(message["role"]):
         st.text(message["content"])
@@ -28,7 +64,11 @@ if user_input:
         response = st.write_stream(
                         message_chunk.content for message_chunk, metadata in chatbot.stream(
                                                                                 { "messages" : [HumanMessage(content=user_input)]},
-                                                                                config, 
+                                                                                {
+                                                                                    "configurable": {
+                                                                                        "thread_id": st.session_state["thread_id"]
+                                                                                    }
+                                                                                }, 
                                                                                 stream_mode="messages"
                                                                                 ) 
                                                                             )
