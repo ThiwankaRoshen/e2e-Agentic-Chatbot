@@ -17,8 +17,11 @@ def chat_node(state: ChatState):
     response = llm.invoke(messages)
     return {'messages': [response]}
 
-from langgraph.checkpoint.memory import MemorySaver
-checkpoint = MemorySaver()
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
+
+conn = sqlite3.connect('chatbot_state.db', check_same_thread=False)
+checkpoint = SqliteSaver(conn)
 graph = StateGraph(ChatState)
 graph.add_node('chat_node', chat_node)
 

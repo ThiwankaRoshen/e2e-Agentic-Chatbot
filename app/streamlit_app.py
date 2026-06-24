@@ -20,18 +20,24 @@ def load_conversation(thread_id):
                                             "thread_id": thread_id 
                                         }
                                     })
-    return state.values.get("messages", [])
+    return [{"role": "user" if isinstance(msg, HumanMessage) else "assistant", "content": msg.content} for msg in state.values.get("messages", [])]
 
-if 'message_history' not in st.session_state:
-    st.session_state['message_history'] = []
+def load_threads():
+    return list(set([ckpt.config['configurable']['thread_id'] for ckpt in chatbot.checkpointer.list(None)]))
+
 
 if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = []
-
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = generate_thread_id()
-    add_thread(st.session_state["thread_id"])
+    st.session_state['chat_threads'] =  load_threads()
+    if st.session_state['chat_threads']: 
+        st.session_state['thread_id'] = st.session_state['chat_threads'][-1]
+        st.session_state['message_history'] = load_conversation(st.session_state['thread_id'])
+    else:
+        st.session_state['thread_id'] = generate_thread_id()
+        st.session_state['message_history'] = []
+        add_thread(st.session_state['thread_id'])
+    
     st.rerun()
+    
 
 st.sidebar.title("Chat Threads")
 
@@ -43,9 +49,8 @@ if st.sidebar.button("New Thread"):
     
 for thread_id in st.session_state['chat_threads'][::-1]:
     if st.sidebar.button(f"Thread {thread_id}"):
-        st.session_state['thread_id'] = thread_id
-        tem_messages = load_conversation(thread_id)
-        st.session_state['message_history'] = [{"role": "user" if isinstance(msg, HumanMessage) else "assistant", "content": msg.content} for msg in tem_messages]
+        st.session_state['thread_id'] = thread_id 
+        st.session_state['message_history'] = load_conversation(thread_id)
         st.rerun()
             
 for message in st.session_state['message_history']:
