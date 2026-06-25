@@ -3,3 +3,5 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 chatbot_state.db**
+faiss_index/
+*.pdf

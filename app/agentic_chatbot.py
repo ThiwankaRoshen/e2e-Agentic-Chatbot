@@ -5,17 +5,76 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import tool
 import sqlite3
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_tavily import TavilySearch
 from typing import TypedDict, Annotated
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 import requests
 import math
 import os
 from dotenv import load_dotenv
 load_dotenv() 
+ 
+token = os.environ["OPENAI_EMBEDDING_MODEL_API_KEY"]
+endpoint = "https://models.github.ai/inference"
+model_name = "text-embedding-3-small"  
+embeddings = OpenAIEmbeddings(
+    openai_api_base=endpoint,  
+    model=model_name,          
+    api_key=token,
+)
 
 
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+INDEX_PATH = "faiss_index"
+def load_pdf_and_create_vector_store(pdf_path: str):
+    loader = PyPDFLoader(pdf_path)
+    docs = loader.load()
+    chunks = splitter.split_documents(docs)
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    vector_store.save_local(INDEX_PATH)
+
+def get_retriever():
+    retriever = FAISS.load_local(
+        folder_path=INDEX_PATH,
+        embeddings=embeddings,
+        allow_dangerous_deserialization=True
+        ).as_retriever(search_type="similarity", search_kwargs={'k':4})
+    return retriever
+
+@tool
+def rag_tool(query: str)->str:
+    """
+    Retrieve relevant information from the PDF document.
+    Use this tool when the user asks factual or conceptual questions that may be answered using the stored PDF dcocuments.
+
+    Args:
+        Query: The questions or search query used to retrieve PDF content.
+    """
+    documents = get_retriever().invoke(query)
+
+    if not documents:
+        return "No relevent information was found in the PDF"
+
+    formatted_documents = []
+
+    for i, doc in enumerate(documents, start=1):
+        source = doc.metadata.get("source", "Unknown source")
+        page = doc.metadata.get("page", "Unknown page")
+
+        formatted_documents.append(
+            f"""
+            Document: {i}
+            Source: {source}
+            Page: {page}
+            Content: {doc.page_content}
+            """
+        )
+    return "\n\n".join(formatted_documents)
 
 search_tool = TavilySearch(
     max_results=5,
@@ -106,7 +165,7 @@ def get_stock_price(symbol: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-tools = [search_tool, calculator, get_stock_price]
+tools = [search_tool, calculator, get_stock_price, rag_tool]
 
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
