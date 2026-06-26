@@ -1,6 +1,7 @@
 .env
 __pycache__/
 .ipynb_checkpoints/
+.venv
 .venv/
 chatbot_state.db**
 faiss_index/
