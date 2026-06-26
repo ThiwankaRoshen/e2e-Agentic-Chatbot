@@ -20,12 +20,15 @@ COPY pyproject.toml uv.lock .
 # Install uv and sync dependencies from the lock file
 RUN python -m pip install --upgrade pip && \
     python -m pip install --no-cache-dir uv && \
-    uv sync --system --no-dev
+    uv sync --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy the complete project
 COPY . .
 
 EXPOSE 8501
+
 
 CMD ["streamlit", "run", "app/streamlit_app.py", \
      "--server.port=8501", \
