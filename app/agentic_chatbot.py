@@ -2,7 +2,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.types import interrupt, Command
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import tool
 import sqlite3
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -13,6 +14,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from datetime import datetime
+import random
 import requests
 import math
 import os
@@ -165,7 +168,47 @@ def get_stock_price(symbol: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-tools = [search_tool, calculator, get_stock_price, rag_tool]
+
+
+@tool
+def purchase_stock(symbol: str, quantity: int) -> dict:
+    """
+    Mock function to simulate purchasing a stock.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA').
+        quantity: Number of shares to purchase.
+
+    Returns:
+        A dictionary containing the simulated trade details.
+    """
+
+    if quantity <= 0:
+        return {
+            "success": False,
+            "error": "Quantity must be greater than zero."
+        }
+
+    # Simulated market price
+    mock_price = round(random.uniform(50, 500), 2)
+
+    decision = interrupt(f"Approval for Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks. (yes/no)")
+
+    if decision.lower()=="no":
+        return {
+            "status": "cancelled",
+            "message": f"Declined Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks.",
+            "symbol": symbol,
+            "quantity": quantity 
+        }
+    return {
+            "status": "success",
+            "message": f"Placed Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks.",
+            "symbol": symbol,
+            "quantity": quantity 
+        }
+
+tools = [search_tool, calculator, get_stock_price, rag_tool, purchase_stock]
 
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
