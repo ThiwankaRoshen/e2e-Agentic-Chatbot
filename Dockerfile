@@ -20,7 +20,7 @@ COPY pyproject.toml uv.lock .
 # Install uv and sync dependencies from the lock file
 RUN python -m pip install --upgrade pip && \
     python -m pip install --no-cache-dir uv && \
-    uv sync --no-dev
+    uv sync --system --no-dev
 
 # Copy the complete project
 COPY . .
