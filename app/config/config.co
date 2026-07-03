@@ -1,0 +1,9 @@
+define user message
+  "..."
+
+define flow check pii
+  $result = execute detect_pii
+  if $result.has_pii
+    $types = $result.pii_types
+    $details = $result.details
+    bot inform "PII_DETECTED:$types|$details"

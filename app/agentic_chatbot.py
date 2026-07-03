@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -8,11 +10,15 @@ from langchain_core.tools import tool
 import sqlite3
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_tavily import TavilySearch
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, Literal
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from nemoguardrails import LLMRails, RailsConfig
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from datetime import datetime
 import random
@@ -214,9 +220,97 @@ endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
 llm_with_tools = llm.bind_tools(tools)
 
+
+
+
+# ========== LOCAL PII DETECTION (No external calls) ==========
+
+provider = NlpEngineProvider(nlp_configuration={
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}]
+})
+analyzer = AnalyzerEngine(
+    nlp_engine=provider.create_engine(),
+    supported_languages=["en"]
+)
+
+def detect_pii(user_message: str) -> dict:
+    """Local PII detection using Presidio - NO external API calls"""
+    results = analyzer.analyze(
+        text=user_message,
+        language="en",
+        entities=[
+            "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER",
+            "US_SSN", "CREDIT_CARD_NUMBER", "ADDRESS",
+            "DATE_OF_BIRTH", "IP_ADDRESS", "IBAN_CODE"
+        ]
+    )
+    
+    if results:
+        pii_types = list(set([r.entity_type.replace("_", " ").title() for r in results]))
+        details = "; ".join([f"{r.entity_type}: '{user_message[r.start:r.end]}'" for r in results])
+        return {"has_pii": True, "pii_types": pii_types, "details": details}
+    
+    return {"has_pii": False, "pii_types": [], "details": ""}
+
+
+pii_config = RailsConfig.from_path("./config")
+pii_rails = LLMRails(pii_config)
+pii_rails.register_action(detect_pii, "detect_pii")
+
+# ============ Updated State ============
+
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    proceed_to_llm: bool
 
+
+# ============ PII Guardrail Node ============
+
+def pii_guardrail_node(state: ChatState):
+    messages = state['messages']
+    
+    last_human_msg = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_human_msg = msg.content
+            break
+
+    if not last_human_msg:
+        return {'proceed_to_llm': True}
+
+    # Call NeMo (which calls your local detect_pii function)
+    result = pii_rails.generate(messages=[{"role": "user", "content": last_human_msg}])
+    response_text = result if isinstance(result, str) else str(result)
+
+    if "PII_DETECTED:" in response_text:
+        parts = response_text.split("PII_DETECTED:")[1]
+        types_str, details = parts.split("|", 1)
+        pii_types = [t.strip() for t in types_str.split(",")]
+
+        user_decision = interrupt(
+            f"🔒 **PII DETECTED**\n\n"
+            f"• **Types:** {', '.join(pii_types)}\n"
+            f"• **Details:** {details.strip()}\n\n"
+            f"Send to AI? (yes/no)"
+        )
+
+        if user_decision and str(user_decision).lower().strip() in ['yes', 'y']:
+            return {'messages': [AIMessage(content="✅ Confirmed.")], 'proceed_to_llm': True}
+        
+        return {
+            'messages': [AIMessage(content="🛑 Blocked. Remove PII and try again.")],
+            'proceed_to_llm': False
+        }
+
+    return {'proceed_to_llm': True}
+
+
+def route_after_pii_check(state: ChatState) -> Literal["chat_node", "__end__"]:
+    """Route to chat_node or END based on PII check result"""
+    if state.get('proceed_to_llm', True):
+        return "chat_node"
+    return "__end__"
 
 def chat_node(state: ChatState):
     messages = state['messages']
@@ -229,13 +323,16 @@ tool_node = ToolNode(tools)
 
 conn = sqlite3.connect('chatbot_state.db', check_same_thread=False)
 checkpointer = SqliteSaver(conn)
+
 graph = StateGraph(ChatState)
+
+graph.add_node('pii_guardrail', pii_guardrail_node)
 graph.add_node('chat_node', chat_node)
 graph.add_node('tools', tool_node)
-graph.add_edge(START, 'chat_node')
-graph.add_conditional_edges('chat_node', tools_condition)
-graph.add_edge('tools', 'chat_node')
-graph.add_edge('chat_node', END)
-chatbot = graph.compile(checkpointer)
 
- 
+graph.add_edge(START, 'pii_guardrail')
+graph.add_conditional_edges('pii_guardrail', route_after_pii_check)
+graph.add_conditional_edges('chat_node', tools_condition)
+graph.add_edge('tools', 'chat_node') 
+
+chatbot = graph.compile(checkpointer)
