@@ -2,8 +2,9 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain.agents.middleware import HumanInTheLoopMiddleware 
 
-from langgraph.checkpoint.sqlite import SqliteSaver
-import sqlite3
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+import aiosqlite
+
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_tavily import TavilySearch
@@ -209,27 +210,31 @@ tools = [search_tool, calculator, get_stock_price, rag_tool, purchase_stock]
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
 
-conn = sqlite3.connect('chatbot_state.db', check_same_thread=False)
-checkpointer = SqliteSaver(conn) 
 
-model = GLiNER2.from_pretrained("fastino/gliner2-multi-v1")
-detector = Gliner2Detector(model=model, labels=["PERSON", "LOCATION"])
-pipeline = ThreadAnonymizationPipeline(detector=detector, anonymizer=Anonymizer())
+async def create_chatbot_agent():
+    conn = await aiosqlite.connect("chatbot_state.db")
+    checkpointer = AsyncSqliteSaver(conn)
+
+    model = GLiNER2.from_pretrained("fastino/gliner2-multi-v1")
+    detector = Gliner2Detector(model=model, labels=["PERSON", "LOCATION"])
+    pipeline = ThreadAnonymizationPipeline(detector=detector, anonymizer=Anonymizer())
 
 
-chatbot = create_agent(
-    model=llm,
-    tools=tools,
-    checkpointer=checkpointer,
-    middleware=[
-        HumanInTheLoopMiddleware(
-            interrupt_on={
-                "purchase_stock": True,   
-            },
-            description_prefix="Tool execution pending approval",
-        ),
-        PIIAnonymizationMiddleware(
-            pipeline=pipeline
-        ),
-    ]
-)
+    chatbot = create_agent(
+        model=llm,
+        tools=tools,
+        checkpointer=checkpointer,
+        middleware=[
+            HumanInTheLoopMiddleware(
+                interrupt_on={
+                    "purchase_stock": True,   
+                },
+                description_prefix="Tool execution pending approval",
+            ),
+            PIIAnonymizationMiddleware(
+                pipeline=pipeline
+            ),
+        ]
+    )
+    
+    return chatbot

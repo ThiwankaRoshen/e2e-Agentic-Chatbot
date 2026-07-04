@@ -1,14 +1,44 @@
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, AIMessageChunk, ToolMessage
 from langgraph.types import Command
 import streamlit as st
+import asyncio
 import uuid
 import json
 import os
 import tempfile
 
-from agentic_chatbot import chatbot, load_pdf_and_create_vector_store, INDEX_PATH
+from agentic_chatbot import create_chatbot_agent, load_pdf_and_create_vector_store, INDEX_PATH
 
 st.title("Langraph Chatbot")
+
+# ── Async plumbing ─────────────────────────────────────────────────────────────
+# One event loop for the whole app process, reused across every Streamlit rerun.
+# Do NOT use asyncio.run() per-call here -- it tears the loop down each time,
+# which orphans the aiosqlite connection the checkpointer holds onto.
+
+@st.cache_resource
+def get_event_loop():
+    return asyncio.new_event_loop()
+
+def run_async(coro):
+    return get_event_loop().run_until_complete(coro)
+
+def stream_sync(async_gen):
+    """Drain an async generator using the persistent loop, yielding items
+    to sync code as soon as each is ready (keeps incremental UI updates)."""
+    loop = get_event_loop()
+    while True:
+        try:
+            yield loop.run_until_complete(async_gen.__anext__())
+        except StopAsyncIteration:
+            break
+
+@st.cache_resource
+def get_chatbot():
+    # Built once per server process, on the cached loop above.
+    return run_async(create_chatbot_agent())
+
+chatbot = get_chatbot()
 
 # ── PDF Upload Section ────────────────────────────────────────────────────────
 
@@ -57,19 +87,23 @@ def add_thread(thread_id):
     if thread_id not in st.session_state["chat_threads"]:
         st.session_state['chat_threads'].append(thread_id)
 
-def load_conversation(thread_id):
-    state = chatbot.get_state(config={
-        "configurable": {"thread_id": thread_id}
-    })
+async def _load_conversation(thread_id):
+    state = await chatbot.aget_state(config={"configurable": {"thread_id": thread_id}})
     return state.values.get("messages", [])
 
-def load_threads():
-    return list(set([
-        ckpt.config['configurable']['thread_id']
-        for ckpt in chatbot.checkpointer.list(None)
-    ]))
+def load_conversation(thread_id):
+    return run_async(_load_conversation(thread_id))
 
-def get_interrupt_data(thread_id):
+async def _load_threads():
+    thread_ids = set()
+    async for ckpt in chatbot.checkpointer.alist(None):
+        thread_ids.add(ckpt.config['configurable']['thread_id'])
+    return list(thread_ids)
+
+def load_threads():
+    return run_async(_load_threads())
+
+async def _get_interrupt_data(thread_id):
     """
     Return the interrupt's `.value` payload for a thread, or None if there's
     no pending interrupt. The value has the shape:
@@ -77,7 +111,7 @@ def get_interrupt_data(thread_id):
     where action_requests[i] corresponds 1:1 with review_configs[i], and the
     decisions list you resume with must be in the same order.
     """
-    state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
+    state = await chatbot.aget_state(config={"configurable": {"thread_id": thread_id}})
 
     tasks = getattr(state, 'tasks', None)
     if tasks:
@@ -89,16 +123,22 @@ def get_interrupt_data(thread_id):
                 return task_interrupts[0].value
     return None
 
+def get_interrupt_data(thread_id):
+    return run_async(_get_interrupt_data(thread_id))
+
 def has_pending_interrupt(thread_id):
     """Check if thread has a pending interrupt awaiting resume."""
     return get_interrupt_data(thread_id) is not None
 
-def submit_decisions(thread_id, decisions):
-    """Resume the graph with a list of decisions, one per action_request, in order."""
-    chatbot.invoke(
+async def _submit_decisions(thread_id, decisions):
+    await chatbot.ainvoke(
         Command(resume={"decisions": decisions}),
         config={"configurable": {"thread_id": thread_id}}
     )
+
+def submit_decisions(thread_id, decisions):
+    """Resume the graph with a list of decisions, one per action_request, in order."""
+    run_async(_submit_decisions(thread_id, decisions))
 
 # ── Session state init ────────────────────────────────────────────────────────
 
@@ -177,8 +217,6 @@ if pending_interrupt:
     action_requests = pending_interrupt.get('action_requests', [])
     review_configs = pending_interrupt.get('review_configs', [])
 
-    # Collect one decision per action_request, keyed by index, in session_state
-    # so choices survive reruns until the user hits "Submit".
     decisions_key = f"decisions_{current_thread}"
     if decisions_key not in st.session_state:
         st.session_state[decisions_key] = {}
@@ -215,7 +253,6 @@ if pending_interrupt:
         st.divider()
 
     if st.button("Submit Decisions", type="primary", key=f"submit_{current_thread}"):
-        # Assemble decisions in the same order as action_requests
         decisions = [
             st.session_state[decisions_key].get(i, {"type": "reject", "message": "No decision provided."})
             for i in range(len(action_requests))
@@ -225,7 +262,6 @@ if pending_interrupt:
         st.session_state['message_history'] = load_conversation(current_thread)
         st.rerun()
 
-    # Disable chat input when interrupt is pending
     st.chat_input(disabled=True, placeholder="Please respond to the approval request above...")
 
 else:
@@ -258,7 +294,7 @@ else:
                 tool_results_rendered = {}
 
                 try:
-                    for chunk, metadata in chatbot.stream(
+                    agen = chatbot.astream(
                         {"messages": [HumanMessage(content=user_input)]},
                         {
                             "configurable": {"thread_id": st.session_state["thread_id"]},
@@ -266,7 +302,9 @@ else:
                             "run_name": f"ChatBot Trace of {st.session_state['thread_id']}"
                         },
                         stream_mode="messages"
-                    ):
+                    )
+
+                    for chunk, metadata in stream_sync(agen):
                         if isinstance(chunk, AIMessageChunk) and chunk.tool_call_chunks:
                             for tc_chunk in chunk.tool_call_chunks:
                                 if tc_chunk.get("name"):
@@ -295,8 +333,6 @@ else:
                             full_response += chunk.content
                             text_placeholder.markdown(full_response + "▌")
 
-                    # The stream simply stops yielding once the graph pauses at
-                    # an interrupt -- no exception is raised. Detect it via state.
                     if has_pending_interrupt(st.session_state['thread_id']):
                         status_container.markdown("⏳ *Waiting for your approval...*")
                     elif full_response:
