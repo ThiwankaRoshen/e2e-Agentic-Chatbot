@@ -1,5 +1,5 @@
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, AIMessageChunk, ToolMessage
-from langgraph.types import interrupt, Command
+from langgraph.types import Command
 import streamlit as st
 import uuid
 import json
@@ -70,22 +70,35 @@ def load_threads():
     ]))
 
 def get_interrupt_data(thread_id):
-    """Get interrupt data for a thread"""
+    """
+    Return the interrupt's `.value` payload for a thread, or None if there's
+    no pending interrupt. The value has the shape:
+        {"action_requests": [...], "review_configs": [...]}
+    where action_requests[i] corresponds 1:1 with review_configs[i], and the
+    decisions list you resume with must be in the same order.
+    """
     state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
-    
-    # Check if we're in an interrupt state
+
     tasks = getattr(state, 'tasks', None)
-    if tasks and len(tasks) > 0:
-        # Get the first task (usually there's only one during interrupt)
-        task = tasks[0]
-        if hasattr(task, 'interrupts') and task.interrupts:
-            return task.interrupts
+    if tasks:
+        for task in tasks:
+            task_interrupts = getattr(task, 'interrupts', None)
+            if task_interrupts:
+                # There is normally exactly one Interrupt per task, whose
+                # .value bundles all action_requests needing review.
+                return task_interrupts[0].value
     return None
 
 def has_pending_interrupt(thread_id):
-    """Check if thread has pending interrupt"""
-    state = chatbot.get_state(config={"configurable": {"thread_id": thread_id}})
-    return state.next == '__interrupt__' if hasattr(state, 'next') else False
+    """Check if thread has a pending interrupt awaiting resume."""
+    return get_interrupt_data(thread_id) is not None
+
+def submit_decisions(thread_id, decisions):
+    """Resume the graph with a list of decisions, one per action_request, in order."""
+    chatbot.invoke(
+        Command(resume={"decisions": decisions}),
+        config={"configurable": {"thread_id": thread_id}}
+    )
 
 # ── Session state init ────────────────────────────────────────────────────────
 
@@ -119,6 +132,9 @@ for thread_id in st.session_state['chat_threads'][::-1]:
 
 # ── Render chat history ───────────────────────────────────────────────────────
 
+current_thread = st.session_state['thread_id']
+pending_interrupt = get_interrupt_data(current_thread)
+
 messages_to_render = st.session_state['message_history']
 
 for msg in messages_to_render:
@@ -130,8 +146,7 @@ for msg in messages_to_render:
         with st.chat_message("assistant"):
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    # Don't show tool result expander for interrupted tools
-                    if tc['name'] == 'purchase_stock' and has_pending_interrupt(st.session_state['thread_id']):
+                    if tc['name'] == 'purchase_stock' and pending_interrupt:
                         with st.expander(f"🔧 Tool Call: {tc['name']} (Waiting for approval...)", expanded=True):
                             try:
                                 st.json(json.loads(tc['args']) if isinstance(tc['args'], str) else tc['args'])
@@ -156,43 +171,65 @@ for msg in messages_to_render:
 
 # ── Check for interrupts ──────────────────────────────────────────────────────
 
-current_thread = st.session_state['thread_id']
-interrupts = get_interrupt_data(current_thread)
+if pending_interrupt:
+    st.warning("⚠️ **Action Required: Review pending tool call(s)**")
 
-if interrupts:
-    st.warning("⚠️ **Action Required: Approve or Decline Transaction**")
-    
-    for interrupt_item in interrupts:
-        # Display the interrupt message
-        interrupt_value = interrupt_item.value if hasattr(interrupt_item, 'value') else str(interrupt_item)
-        st.info(interrupt_value)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ Approve", key=f"approve_{current_thread}", type="primary"):
-                # Resume with approval using the correct config
-                chatbot.invoke(
-                    Command(resume="yes"),
-                    config={"configurable": {"thread_id": current_thread}}
-                )
-                st.session_state['message_history'] = load_conversation(current_thread)
-                st.rerun()
-        
-        with col2:
-            if st.button("❌ Decline", key=f"decline_{current_thread}"):
-                # Resume with decline
-                chatbot.invoke(
-                    Command(resume="no"),
-                    config={"configurable": {"thread_id": current_thread}}
-                )
-                st.session_state['message_history'] = load_conversation(current_thread)
-                st.rerun()
-    
+    action_requests = pending_interrupt.get('action_requests', [])
+    review_configs = pending_interrupt.get('review_configs', [])
+
+    # Collect one decision per action_request, keyed by index, in session_state
+    # so choices survive reruns until the user hits "Submit".
+    decisions_key = f"decisions_{current_thread}"
+    if decisions_key not in st.session_state:
+        st.session_state[decisions_key] = {}
+
+    for i, action in enumerate(action_requests):
+        review_config = review_configs[i] if i < len(review_configs) else {}
+        allowed = review_config.get('allowed_decisions', ['approve', 'reject'])
+
+        st.markdown(f"**Tool:** `{action.get('name', 'unknown')}`")
+        st.json(action.get('arguments', {}))
+        if action.get('description'):
+            st.caption(action['description'])
+
+        choice = st.radio(
+            "Decision",
+            options=[d for d in ["approve", "reject"] if d in allowed],
+            key=f"radio_{current_thread}_{i}",
+            horizontal=True,
+        )
+
+        reject_message = ""
+        if choice == "reject":
+            reject_message = st.text_input(
+                "Reason (sent back to the model)",
+                value="User rejected this action. Do not retry this tool call.",
+                key=f"reject_msg_{current_thread}_{i}",
+            )
+
+        if choice == "approve":
+            st.session_state[decisions_key][i] = {"type": "approve"}
+        else:
+            st.session_state[decisions_key][i] = {"type": "reject", "message": reject_message}
+
+        st.divider()
+
+    if st.button("Submit Decisions", type="primary", key=f"submit_{current_thread}"):
+        # Assemble decisions in the same order as action_requests
+        decisions = [
+            st.session_state[decisions_key].get(i, {"type": "reject", "message": "No decision provided."})
+            for i in range(len(action_requests))
+        ]
+        submit_decisions(current_thread, decisions)
+        del st.session_state[decisions_key]
+        st.session_state['message_history'] = load_conversation(current_thread)
+        st.rerun()
+
     # Disable chat input when interrupt is pending
     st.chat_input(disabled=True, placeholder="Please respond to the approval request above...")
 
 else:
-    # ── Handle new user input ─────────────────────────────────────────────────────
+    # ── Handle new user input ─────────────────────────────────────────────────
 
     pdf_index_exists = os.path.exists(INDEX_PATH)
 
@@ -219,7 +256,6 @@ else:
                 full_response = ""
                 is_running_tools = True
                 tool_results_rendered = {}
-                tool_calls_seen = set()
 
                 try:
                     for chunk, metadata in chatbot.stream(
@@ -231,11 +267,6 @@ else:
                         },
                         stream_mode="messages"
                     ):
-                        # Check if this chunk indicates an interrupt
-                        if isinstance(chunk, dict) and "__interrupt__" in chunk:
-                            status_container.markdown("⏳ *Waiting for your approval...*")
-                            break
-
                         if isinstance(chunk, AIMessageChunk) and chunk.tool_call_chunks:
                             for tc_chunk in chunk.tool_call_chunks:
                                 if tc_chunk.get("name"):
@@ -246,7 +277,6 @@ else:
                                         status_container.markdown(f"⏳ *Calling {tool_name}…*")
 
                         elif isinstance(chunk, ToolMessage):
-                            # Only process tool messages for non-interrupted tools
                             if chunk.name not in tool_results_rendered:
                                 status_container.markdown(f"⚙️ *Processing {chunk.name} results…*")
                                 with tools_container:
@@ -265,25 +295,18 @@ else:
                             full_response += chunk.content
                             text_placeholder.markdown(full_response + "▌")
 
-                    # Only show completion if we actually got content and no interrupt
-                    if full_response:
+                    # The stream simply stops yielding once the graph pauses at
+                    # an interrupt -- no exception is raised. Detect it via state.
+                    if has_pending_interrupt(st.session_state['thread_id']):
+                        status_container.markdown("⏳ *Waiting for your approval...*")
+                    elif full_response:
                         text_placeholder.markdown(full_response)
-                    elif is_running_tools and not has_pending_interrupt(st.session_state['thread_id']):
+                    else:
                         status_container.markdown("✅ *Completed*")
 
                 except Exception as e:
-                    error_msg = str(e)
-                    if "interrupt" in error_msg.lower():
-                        # The stream was interrupted, which is expected for HITL
-                        status_container.markdown("⏳ *Waiting for your approval...*")
-                    else:
-                        st.error(f"An error occurred: {error_msg}")
+                    st.error(f"An error occurred: {e}")
 
             st.session_state['is_streaming'] = False
             st.session_state['message_history'] = load_conversation(st.session_state['thread_id'])
-            
-            # Only rerun if no interrupt pending
-            if not has_pending_interrupt(st.session_state['thread_id']):
-                st.rerun()
-            else:
-                st.rerun()
+            st.rerun()

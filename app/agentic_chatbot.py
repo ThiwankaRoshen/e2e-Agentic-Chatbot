@@ -1,20 +1,17 @@
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
+from langchain.agents import create_agent
+from langchain.tools import tool
+from langchain.agents.middleware import HumanInTheLoopMiddleware 
+
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.types import interrupt, Command
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.tools import tool
 import sqlite3
+
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_tavily import TavilySearch
-from typing import TypedDict, Annotated
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from datetime import datetime
 import random
 import requests
 import math
@@ -192,15 +189,6 @@ def purchase_stock(symbol: str, quantity: int) -> dict:
     # Simulated market price
     mock_price = round(random.uniform(50, 500), 2)
 
-    decision = interrupt(f"Approval for Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks. (yes/no)")
-
-    if decision.lower()=="no":
-        return {
-            "status": "cancelled",
-            "message": f"Declined Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks.",
-            "symbol": symbol,
-            "quantity": quantity 
-        }
     return {
             "status": "success",
             "message": f"Placed Transaction: amount-{mock_price} to buy {symbol} {quantity} stocks.",
@@ -212,30 +200,20 @@ tools = [search_tool, calculator, get_stock_price, rag_tool, purchase_stock]
 
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
-llm_with_tools = llm.bind_tools(tools)
-
-class ChatState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-
-
-def chat_node(state: ChatState):
-    messages = state['messages']
-    response = llm_with_tools.invoke(messages)
-    return {'messages': [response]}
-
-tool_node = ToolNode(tools)
-
-
 
 conn = sqlite3.connect('chatbot_state.db', check_same_thread=False)
-checkpointer = SqliteSaver(conn)
-graph = StateGraph(ChatState)
-graph.add_node('chat_node', chat_node)
-graph.add_node('tools', tool_node)
-graph.add_edge(START, 'chat_node')
-graph.add_conditional_edges('chat_node', tools_condition)
-graph.add_edge('tools', 'chat_node')
-graph.add_edge('chat_node', END)
-chatbot = graph.compile(checkpointer)
+checkpointer = SqliteSaver(conn) 
 
- 
+chatbot = create_agent(
+    model=llm,
+    tools=tools,
+    checkpointer=checkpointer,
+    middleware=[
+        HumanInTheLoopMiddleware(
+            interrupt_on={
+                "purchase_stock": True,   
+            },
+            description_prefix="Tool execution pending approval",
+        ),
+    ]
+)
