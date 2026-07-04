@@ -12,6 +12,14 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from piighost.anonymizer import Anonymizer
+from piighost.detector.gliner2 import Gliner2Detector
+from piighost.pipeline import ThreadAnonymizationPipeline
+from piighost.middleware import PIIAnonymizationMiddleware
+from gliner2 import GLiNER2
+
+
+
 import random
 import requests
 import math
@@ -204,6 +212,11 @@ llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
 conn = sqlite3.connect('chatbot_state.db', check_same_thread=False)
 checkpointer = SqliteSaver(conn) 
 
+model = GLiNER2.from_pretrained("fastino/gliner2-multi-v1")
+detector = Gliner2Detector(model=model, labels=["PERSON", "LOCATION"])
+pipeline = ThreadAnonymizationPipeline(detector=detector, anonymizer=Anonymizer())
+
+
 chatbot = create_agent(
     model=llm,
     tools=tools,
@@ -214,6 +227,9 @@ chatbot = create_agent(
                 "purchase_stock": True,   
             },
             description_prefix="Tool execution pending approval",
+        ),
+        PIIAnonymizationMiddleware(
+            pipeline=pipeline
         ),
     ]
 )
