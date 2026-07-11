@@ -6,3 +6,4 @@ __pycache__/
 chatbot_state.db**
 faiss_index/
 *.pdf
+.kiro
