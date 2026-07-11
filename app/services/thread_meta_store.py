@@ -80,7 +80,7 @@ class ThreadMetaStore:
         truncated = first_human_message[: self._MAX_FIRST_MESSAGE_LEN]
         await self._conn.execute(
             """
-            INSERT INTO thread_meta (thread_id, created_at, first_human_message)
+            INSERT OR IGNORE INTO thread_meta (thread_id, created_at, first_human_message)
             VALUES (?, ?, ?)
             """,
             (thread_id, created_at, truncated),
