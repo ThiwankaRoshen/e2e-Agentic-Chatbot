@@ -91,33 +91,6 @@ search_tool = TavilySearch(
     search_depth="advanced"
 )
 
-@tool
-def calculator(expression: str) -> str:
-    """
-    Useful for simple math calculations.
-    Input should be a valid math expression.
-    Example: 2+2, sqrt(16), 10*5
-    """
-    try:
-        allowed_names = {
-            k: v
-            for k, v in math.__dict__.items()
-            if not k.startswith("__")
-        }
-
-        result = eval(
-            expression,
-            {"__builtins__": {}},
-            allowed_names
-        )
-
-        return str(result)
-
-    except Exception as e:
-        return f"Calculation error: {str(e)}"
-
-
- 
 
 @tool
 def get_stock_price(symbol: str) -> dict:
@@ -205,7 +178,7 @@ def purchase_stock(symbol: str, quantity: int) -> dict:
             "quantity": quantity 
         }
 
-tools = [search_tool, calculator, get_stock_price, rag_tool, purchase_stock]
+tools = [search_tool, get_stock_price, rag_tool, purchase_stock]
 
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
