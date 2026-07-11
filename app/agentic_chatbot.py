@@ -218,11 +218,12 @@ class GuardrailsMiddleware(AgentMiddleware):
             messages=[{"role": "assistant", "content": last_ai_msg}]
         )
 
-        if result.get("content") != last_ai_msg:
+        new_content = result.get("content")
+        if new_content and new_content != last_ai_msg:
             # output rail rewrote or blocked it — return state update instead of mutating
             return {
                 "messages": [
-                    AIMessage(content=result["content"])
+                    AIMessage(content=new_content)
                 ],
             }
         return None

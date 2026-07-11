@@ -115,6 +115,9 @@ def _is_complete_message(chunk) -> bool:
     """
     if not getattr(chunk, "id", None):
         return False
+    from langchain_core.messages import BaseMessageChunk
+    if isinstance(chunk, BaseMessageChunk):
+        return False
     return isinstance(chunk, (AIMessage, HumanMessage, ToolMessage))
 
 

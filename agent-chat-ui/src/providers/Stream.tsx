@@ -124,13 +124,29 @@ function useSSEStream(apiBase: string): StreamContextValue {
       const threadIdParam = threadIdRef.current ?? "new";
       const msgs: Message[] = input?.messages ?? [];
 
+      // Add human messages to local state so they render immediately
+      const humanMsgs = msgs.filter((m) => m.type === "human");
+      if (humanMsgs.length > 0) {
+        setMessages((prev) => [...prev, ...humanMsgs]);
+      }
+
+      // Helper to extract text from a multimodal content array if it only contains text
+      const extractContent = (content: any) => {
+        if (typeof content === "string") return content;
+        if (Array.isArray(content)) {
+          // If it's a multimodal array, check if we only have text blocks
+          const hasNonText = content.some((c) => c.type !== "text");
+          if (!hasNonText) {
+            return content.map((c) => c.text).join("\n");
+          }
+        }
+        return JSON.stringify(content);
+      };
+
       const body = {
         messages: msgs.map((m) => ({
           type: m.type,
-          content:
-            typeof m.content === "string"
-              ? m.content
-              : JSON.stringify(m.content),
+          content: extractContent(m.content),
         })),
       };
 
