@@ -1,7 +1,7 @@
 import { BaseMessage } from "@langchain/core/messages";
 import { Interrupt, Thread, ThreadStatus } from "@langchain/langgraph-sdk";
 
-export type DecisionType = "approve" | "edit" | "reject";
+export type DecisionType = "approve" | "edit" | "reject" | "respond";
 
 export interface Action {
   name: string;

@@ -116,8 +116,21 @@ export function AssistantMessage({
   );
 
   const thread = useStreamContext();
+  // Consider this the "last relevant message" for interrupt rendering when:
+  // 1. It is literally the last message, OR
+  // 2. It is the last AI/tool message — i.e. every message after it is NOT an
+  //    ai/tool message (e.g. only human messages follow, which shouldn't happen
+  //    normally, but handles edge cases), OR
+  // 3. The interrupt is active and this message is the last AI message in the
+  //    list (tool result messages trail after the AI message that triggered
+  //    the tool call, so we must not wait for them to be "last").
+  const lastMsgId = thread.messages[thread.messages.length - 1].id;
+  const lastAiMessage = [...thread.messages]
+    .reverse()
+    .find((m) => m.type === "ai");
   const isLastMessage =
-    thread.messages[thread.messages.length - 1].id === message?.id;
+    lastMsgId === message?.id ||
+    (!!thread.interrupt && lastAiMessage?.id === message?.id);
   const hasNoAIOrToolMessages = !thread.messages.find(
     (m) => m.type === "ai" || m.type === "tool",
   );
