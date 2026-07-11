@@ -165,7 +165,11 @@ export function Thread() {
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if ((input.trim().length === 0 && contentBlocks.length === 0) || isLoading)
+    if (
+      (input.trim().length === 0 && contentBlocks.length === 0) ||
+      isLoading ||
+      stream.interrupt
+    )
       return;
     setFirstTokenReceived(false);
 
@@ -382,7 +386,7 @@ export function Thread() {
                       handleRegenerate={handleRegenerate}
                     />
                   )}
-                  {isLoading && !firstTokenReceived && (
+                  {isLoading && !firstTokenReceived && !stream.interrupt && (
                     <AssistantMessageLoading />
                   )}
                 </>
@@ -486,6 +490,7 @@ export function Thread() {
                             className="ml-auto shadow-md transition-all"
                             disabled={
                               isLoading ||
+                              !!stream.interrupt ||
                               (!input.trim() && contentBlocks.length === 0)
                             }
                           >

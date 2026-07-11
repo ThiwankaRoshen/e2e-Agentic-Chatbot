@@ -60,6 +60,14 @@ async def stream_run(
     # Resolve "new" → fresh UUID
     if thread_id == "new":
         thread_id = str(uuid.uuid4())
+    elif request.app.state.interrupt_bus.is_suspended(thread_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Thread {thread_id} is suspended awaiting a HITL decision. "
+                "Use the resume endpoint instead."
+            ),
+        )
 
     # Extract first human message for metadata storage
     first_human_message: str = ""

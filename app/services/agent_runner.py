@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import AsyncGenerator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
@@ -265,15 +266,11 @@ async def sse_generator(
                     bus.set_interrupt(thread_id)
                     decisions = await bus.wait_for_resume(thread_id)
 
-                    # Resume the agent — LangGraph accepts None as input when
-                    # resuming from an interrupt; decisions are passed via the
-                    # "resume" config key.
+                    # Resume the agent with a Command so HITL middleware can
+                    # apply decisions and execute (or reject) the tool call.
                     resume_stream = agent.astream(
-                        None,
-                        config={
-                            "configurable": {"thread_id": thread_id},
-                            "resume": {"decisions": decisions},
-                        },
+                        Command(resume={"decisions": decisions}),
+                        config={"configurable": {"thread_id": thread_id}},
                         stream_mode=["messages", "updates"],
                     )
 

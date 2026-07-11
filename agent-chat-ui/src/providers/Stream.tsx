@@ -101,9 +101,18 @@ function useSSEStream(apiBase: string): StreamContextValue {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ decisions: options.command.resume.decisions }),
-        }).catch((err) => {
-          setError(err instanceof Error ? err : new Error(String(err)));
-        });
+        })
+          .then((res) => {
+            if (!res.ok) {
+              throw new Error(`Resume request failed: ${res.status}`);
+            }
+            setInterrupt(undefined);
+            setIsLoading(true);
+          })
+          .catch((err) => {
+            setIsLoading(false);
+            setError(err instanceof Error ? err : new Error(String(err)));
+          });
         return;
       }
 
@@ -183,8 +192,9 @@ function useSSEStream(apiBase: string): StreamContextValue {
               setMessages((prev) => upsertMessage(prev, data as Message));
             } else if (event === "interrupt") {
               setInterrupt(data as Interrupt<HITLRequest>);
-              // isLoading stays true while suspended
+              setIsLoading(false);
             } else if (event === "done") {
+              setInterrupt(undefined);
               setIsLoading(false);
             } else if (event === "error") {
               setError(
@@ -193,6 +203,7 @@ function useSSEStream(apiBase: string): StreamContextValue {
               setIsLoading(false);
             }
           }
+          setIsLoading(false);
         } catch (err) {
           if ((err as Error)?.name === "AbortError") {
             // User called stop() — not an error
