@@ -22,12 +22,13 @@ export interface SubmitOptions {
     resume?: { decisions: Decision[] };
     goto?: string;
   };
+  [key: string]: unknown;
 }
 
 export interface MessagesMetadata {
   branch: undefined;
   branchOptions: undefined;
-  firstSeenState: { parent_checkpoint: undefined };
+  firstSeenState: { parent_checkpoint: undefined; values?: any };
 }
 
 export interface StreamContextValue {

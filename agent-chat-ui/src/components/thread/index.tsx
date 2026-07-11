@@ -189,7 +189,7 @@ export function Thread() {
         streamMode: ["values"],
         streamSubgraphs: true,
         streamResumable: true,
-        optimisticValues: (prev) => ({
+        optimisticValues: (prev: any) => ({
           ...prev,
           context,
           messages: [
