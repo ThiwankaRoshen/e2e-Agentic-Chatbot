@@ -1,8 +1,9 @@
 models:
   - type: main
     engine: openai
-    model: gpt-4o-mini
-
+    model: openai/gpt-4o-mini    
+    parameters:
+      base_url: "https://models.github.ai/inference"
 rails:
   input:
     flows:

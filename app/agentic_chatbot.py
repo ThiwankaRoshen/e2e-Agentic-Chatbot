@@ -20,7 +20,8 @@ from piighost.middleware import PIIAnonymizationMiddleware
 from gliner2 import GLiNER2
 
 from nemoguardrails import LLMRails, RailsConfig
-from langchain.agents.middleware import AgentMiddleware 
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import AIMessage
 
 
 
@@ -193,7 +194,7 @@ guardrails = LLMRails(rails_config)
 class GuardrailsMiddleware(AgentMiddleware):
     """Runs NeMo Guardrails input/output checks around the agent's model call."""
 
-    async def before_model(self, state, config):
+    async def abefore_model(self, state, runtime):
         last_user_msg = state["messages"][-1].content
 
         result = await guardrails.generate_async(
@@ -204,13 +205,13 @@ class GuardrailsMiddleware(AgentMiddleware):
         if result.get("content", "").strip().lower().startswith("i'm sorry"):
             return {
                 "messages": [
-                    {"role": "assistant", "content": result["content"]}
+                    AIMessage(content=result["content"])
                 ],
                 "jump_to": "end",  # short-circuit, skip the actual LLM/tool call
             }
         return None
 
-    async def after_model(self, state, config):
+    async def aafter_model(self, state, runtime):
         last_ai_msg = state["messages"][-1].content
 
         result = await guardrails.generate_async(
@@ -218,8 +219,12 @@ class GuardrailsMiddleware(AgentMiddleware):
         )
 
         if result.get("content") != last_ai_msg:
-            # output rail rewrote or blocked it
-            state["messages"][-1].content = result["content"]
+            # output rail rewrote or blocked it — return state update instead of mutating
+            return {
+                "messages": [
+                    AIMessage(content=result["content"])
+                ],
+            }
         return None
     
 
