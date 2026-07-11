@@ -19,6 +19,9 @@ from piighost.pipeline import ThreadAnonymizationPipeline
 from piighost.middleware import PIIAnonymizationMiddleware
 from gliner2 import GLiNER2
 
+from nemoguardrails import LLMRails, RailsConfig
+from langchain.agents.middleware import AgentMiddleware 
+
 
 
 import random
@@ -183,6 +186,42 @@ tools = [search_tool, get_stock_price, rag_tool, purchase_stock]
 endpoint = "https://models.github.ai/inference"
 llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
 
+rails_config = RailsConfig.from_path("./guardrails")
+guardrails = LLMRails(rails_config)
+
+
+class GuardrailsMiddleware(AgentMiddleware):
+    """Runs NeMo Guardrails input/output checks around the agent's model call."""
+
+    async def before_model(self, state, config):
+        last_user_msg = state["messages"][-1].content
+
+        result = await guardrails.generate_async(
+            messages=[{"role": "user", "content": last_user_msg}]
+        )
+
+        # Guardrails returns its own "blocked" canned response when a rail fires
+        if result.get("content", "").strip().lower().startswith("i'm sorry"):
+            return {
+                "messages": [
+                    {"role": "assistant", "content": result["content"]}
+                ],
+                "jump_to": "end",  # short-circuit, skip the actual LLM/tool call
+            }
+        return None
+
+    async def after_model(self, state, config):
+        last_ai_msg = state["messages"][-1].content
+
+        result = await guardrails.generate_async(
+            messages=[{"role": "assistant", "content": last_ai_msg}]
+        )
+
+        if result.get("content") != last_ai_msg:
+            # output rail rewrote or blocked it
+            state["messages"][-1].content = result["content"]
+        return None
+    
 
 async def create_chatbot_agent():
     conn = await aiosqlite.connect("chatbot_state.db")
@@ -207,6 +246,7 @@ async def create_chatbot_agent():
             PIIAnonymizationMiddleware(
                 pipeline=pipeline
             ),
+            GuardrailsMiddleware(),
         ]
     )
     

@@ -1,0 +1,8 @@
+define flow self check input
+  $allowed = execute self_check_input
+  if not $allowed
+    bot refuse to respond
+    stop
+
+define bot refuse to respond
+  "I'm sorry, I can't process that request. Please rephrase your question about stocks, finances, or the document you've uploaded."

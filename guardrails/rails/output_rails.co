@@ -1,0 +1,8 @@
+define flow self check output
+  $allowed = execute self_check_output
+  if not $allowed
+    bot refuse to respond with output
+    stop
+
+define bot refuse to respond with output
+  "I'm not able to share that response as it may violate content guidelines."

@@ -15,13 +15,20 @@ st.title("Langraph Chatbot")
 # One event loop for the whole app process, reused across every Streamlit rerun.
 # Do NOT use asyncio.run() per-call here -- it tears the loop down each time,
 # which orphans the aiosqlite connection the checkpointer holds onto.
+import asyncio
+import threading
 
 @st.cache_resource
 def get_event_loop():
-    return asyncio.new_event_loop()
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    return loop
 
 def run_async(coro):
-    return get_event_loop().run_until_complete(coro)
+    loop = get_event_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()
 
 def stream_sync(async_gen):
     """Drain an async generator using the persistent loop, yielding items
@@ -29,7 +36,8 @@ def stream_sync(async_gen):
     loop = get_event_loop()
     while True:
         try:
-            yield loop.run_until_complete(async_gen.__anext__())
+            future = asyncio.run_coroutine_threadsafe(async_gen.__anext__(), loop)
+            yield future.result()
         except StopAsyncIteration:
             break
 
