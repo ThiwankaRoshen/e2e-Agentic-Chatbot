@@ -1,9 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { useThreads } from "@/providers/Thread";
-import { Thread } from "@langchain/langgraph-sdk";
+import { type ThreadSummary } from "@/lib/types";
 import { useEffect } from "react";
 
-import { getContentString } from "../utils";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import {
   Sheet,
@@ -19,7 +18,7 @@ function ThreadList({
   threads,
   onThreadClick,
 }: {
-  threads: Thread[];
+  threads: ThreadSummary[];
   onThreadClick?: (threadId: string) => void;
 }) {
   const [threadId, setThreadId] = useQueryState("threadId");
@@ -27,17 +26,7 @@ function ThreadList({
   return (
     <div className="flex h-full w-full flex-col items-start justify-start gap-2 overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
       {threads.map((t) => {
-        let itemText = t.thread_id;
-        if (
-          typeof t.values === "object" &&
-          t.values &&
-          "messages" in t.values &&
-          Array.isArray(t.values.messages) &&
-          t.values.messages?.length > 0
-        ) {
-          const firstMessage = t.values.messages[0];
-          itemText = getContentString(firstMessage.content);
-        }
+        const itemText = t.first_message || t.thread_id;
         return (
           <div
             key={t.thread_id}
