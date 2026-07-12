@@ -9,7 +9,7 @@ import aiosqlite
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agentic_chatbot import create_chatbot_agent
+from app.agent import create_chatbot_agent
 from app.services.agent_runner import InterruptBus
 from app.services.thread_meta_store import ThreadMetaStore
 from app.settings import settings

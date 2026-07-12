@@ -299,7 +299,12 @@ function RejectActionCard({
         <Button
           variant="brand"
           disabled={isLoading}
-          onClick={handleSubmit}
+          onClick={(e) => {
+            // Ensure reject is selected before submitting, even if the
+            // textarea is empty (rejection reason is optional).
+            onChange(rejectResponse.message ?? "", rejectResponse);
+            handleSubmit(e);
+          }}
         >
           Submit rejection
         </Button>
@@ -435,15 +440,9 @@ export function InboxItemInput({
     const trimmed = change.trim();
     setHasAddedResponse(!!trimmed);
 
-    if (!trimmed) {
-      if (hasEdited) {
-        setSelectedSubmitType("edit");
-      } else if (approveAllowed) {
-        setSelectedSubmitType("approve");
-      }
-    } else {
-      setSelectedSubmitType("reject");
-    }
+    // Keep "reject" selected regardless of whether a message has been typed.
+    // The rejection reason is optional — an empty reject is still a valid reject.
+    setSelectedSubmitType("reject");
 
     setHumanResponse((prev) =>
       prev.map((existing) =>

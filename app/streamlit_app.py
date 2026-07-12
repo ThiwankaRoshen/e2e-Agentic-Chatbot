@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 
-from agentic_chatbot import create_chatbot_agent, load_pdf_and_create_vector_store, INDEX_PATH
+from app.agent import create_chatbot_agent, load_pdf_and_create_vector_store, INDEX_PATH
 
 st.title("Langraph Chatbot")
 

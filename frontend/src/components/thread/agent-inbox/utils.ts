@@ -179,10 +179,9 @@ export function buildDecisionFromState(
   }
 
   if (selectedDecision.type === "reject") {
-    const message = selectedDecision.message?.trim();
-    if (!message) {
-      return { error: "Please provide a rejection reason." };
-    }
+    // Rejection reason is optional — allow empty submissions so users can
+    // reject without typing a message.
+    const message = selectedDecision.message?.trim() || undefined;
     return { decision: { type: "reject", message } };
   }
 
