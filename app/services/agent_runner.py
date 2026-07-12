@@ -1,6 +1,35 @@
 """
 Agent runner service: InterruptBus for HITL suspend/resume coordination,
 and SSE utility helpers.
+
+Streaming protocol
+------------------
+The SSE stream emitted by ``sse_generator`` follows the LangGraph V2
+stream-mode wire format so the frontend can use it reliably:
+
+  event: thread_id  → {"thread_id": "<uuid>"}
+
+  (per-token, zero or more)
+  event: messages   → [<message_dict>, <metadata_dict>]
+                       message_dict has type/id/content/tool_calls fields
+                       metadata_dict has langgraph_node / langgraph_step
+
+  (after every graph super-step, one or more)
+  event: values     → {"messages": [<full_msg>, ...]}
+                       Complete authoritative message list including ALL
+                       messages (human + AI + tool). Frontend replaces its
+                       state with this on every values event.
+
+  event: interrupt  → {"value": <HITLRequest>, "id": "<str>"}
+                       Stream stays open; client resumes via /runs/resume.
+
+  event: done       → {}   (always the last frame)
+
+  event: error      → {"message": "<str>"}  (on unhandled exceptions)
+
+Using ``values`` events for final state means the frontend never has to
+manually merge optimistic human messages with backend-emitted messages.
+The ``messages`` events drive token-by-token streaming bubbles.
 """
 
 import asyncio
@@ -42,11 +71,7 @@ class InterruptBus:
         self._state[thread_id] = InterruptState()
 
     async def wait_for_resume(self, thread_id: str) -> list[dict]:
-        """Suspend the SSE generator until resume() is called.
-
-        Awaits the per-thread event, then cleans up state and returns the
-        decisions provided by the Resume endpoint.
-        """
+        """Suspend the SSE generator until resume() is called."""
         state = self._state[thread_id]
         await state.resume_event.wait()
         decisions = state.decisions
@@ -54,10 +79,7 @@ class InterruptBus:
         return decisions
 
     def resume(self, thread_id: str, decisions: list[dict]) -> bool:
-        """Signal the waiting SSE generator with the user's decisions.
-
-        Returns False if the thread is not currently suspended.
-        """
+        """Signal the waiting SSE generator with the user's decisions."""
         state = self._state.get(thread_id)
         if state is None:
             return False
@@ -70,10 +92,11 @@ class InterruptBus:
         return thread_id in self._state
 
 
-def format_sse(event_type: str, data: dict) -> str:
+def format_sse(event_type: str, data) -> str:
     """Format a single SSE frame.
 
-    Returns the standard SSE wire format:
+    Returns the standard SSE wire format::
+
         event: <event_type>\\n
         data: <json>\\n
         \\n
@@ -82,21 +105,17 @@ def format_sse(event_type: str, data: dict) -> str:
 
 
 def serialize_message(msg) -> dict:
-    """Convert a LangChain/LangGraph message object to a plain dict.
+    """Convert a LangChain/LangGraph message object to a serialisable dict.
 
-    The output shape matches the @langchain/langgraph-sdk Message type
-    consumed by the frontend:
+    Shape matches the @langchain/langgraph-sdk Message type::
 
         {
             "id": "<str>",
-            "type": "<str>",
+            "type": "<str>",          # "human" | "ai" | "tool"
             "content": "<str>",
             "tool_calls": [...],
             "additional_kwargs": {...}
         }
-
-    If ``msg.id`` is None, falls back to ``str(id(msg))`` so the frontend
-    always receives a non-null identifier.
     """
     msg_id = msg.id if msg.id is not None else str(id(msg))
     return {
@@ -108,87 +127,81 @@ def serialize_message(msg) -> dict:
     }
 
 
-def _is_complete_message(chunk) -> bool:
-    """Return True if *chunk* represents a fully-formed message (not a streaming delta).
-
-    A complete message has a real ``id`` and is one of the concrete message
-    types (AIMessage, HumanMessage, ToolMessage) rather than a chunk subtype.
-    """
-    if not getattr(chunk, "id", None):
-        return False
-    from langchain_core.messages import BaseMessageChunk
-    if isinstance(chunk, BaseMessageChunk):
-        return False
-    return isinstance(chunk, (AIMessage, HumanMessage, ToolMessage))
-
-
 async def _process_stream_events(
     stream,
     thread_id: str,
 ) -> AsyncGenerator[str, None]:
     """Consume a LangGraph ``astream`` iterator and yield SSE-formatted strings.
 
-    Handles the ``("messages", ...)`` and ``("updates", ...)`` stream modes.
-    Returns immediately after yielding all events; does NOT yield the terminal
-    ``done`` frame — that is the caller's responsibility so resume flows can
-    append more events before the final ``done``.
+    Handles ``("messages", ...)`` chunks for token streaming and
+    ``("values", ...)`` chunks for full-state snapshots.
+    Detects interrupts from ``("updates", ...)`` chunks and yields a sentinel
+    tuple so the caller can suspend/resume without duplicating logic.
 
-    Yields ``None`` as a sentinel when an interrupt is detected so the caller
-    can handle suspend/resume logic.
+    Does NOT yield the terminal ``done`` frame — callers do that.
     """
-    # This function is a plain async generator; it yields SSE strings plus a
-    # special sentinel tuple ("__interrupt_sentinel__", interrupt_value) so the
-    # outer generator can detect the suspend point without duplicating the
-    # event-classification logic.
     async for event in stream:
-        # astream with stream_mode=["messages","updates"] yields tuples (mode, data)
+        # astream with stream_mode=["messages","values","updates"] yields
+        # (mode, data) tuples.
         if isinstance(event, tuple) and len(event) == 2:
             mode, data = event
         else:
-            # Fallback: treat as an updates event if not a tuple
             mode, data = "updates", event
 
         if mode == "messages":
-            # data is (message_chunk, metadata)
+            # data is (message_chunk, metadata_dict)
             if isinstance(data, tuple) and len(data) == 2:
-                chunk, _metadata = data
+                chunk, metadata = data
             else:
                 chunk = data
+                metadata = {}
 
-            # Streaming token: AIMessageChunk with non-empty content, not a tool call
+            # Only stream AI text tokens — skip tool-call-only chunks
             if isinstance(chunk, AIMessageChunk) and chunk.content:
-                # Skip tool-call-only chunks (content is a list of tool call dicts)
                 if isinstance(chunk.content, str):
-                    yield format_sse("token", {"content": chunk.content})
+                    # Emit [message_dict, metadata] so the frontend can use
+                    # the message id for per-message streaming bubbles
+                    msg_dict = {
+                        "id": chunk.id or "__streaming__",
+                        "type": "ai",
+                        "content": chunk.content,
+                        "tool_calls": [],
+                    }
+                    yield format_sse("messages", [msg_dict, metadata])
                     continue
-                # content can be a list for multi-part messages; skip if it
-                # contains only tool-call dicts
+
                 if isinstance(chunk.content, list):
                     text_parts = [
                         p if isinstance(p, str) else p.get("text", "")
                         for p in chunk.content
-                        if isinstance(p, str) or (isinstance(p, dict) and p.get("type") == "text")
+                        if isinstance(p, str)
+                        or (isinstance(p, dict) and p.get("type") == "text")
                     ]
-                    if text_parts:
-                        combined = "".join(text_parts)
-                        if combined:
-                            yield format_sse("token", {"content": combined})
-                            continue
+                    combined = "".join(text_parts)
+                    if combined:
+                        msg_dict = {
+                            "id": chunk.id or "__streaming__",
+                            "type": "ai",
+                            "content": combined,
+                            "tool_calls": [],
+                        }
+                        yield format_sse("messages", [msg_dict, metadata])
+                        continue
 
-            # Complete message: has a real id and is a concrete message type
-            if _is_complete_message(chunk):
-                yield format_sse("message", serialize_message(chunk))
+        elif mode == "values":
+            # Full state snapshot — includes ALL messages (human + AI + tool).
+            # Emit as a "values" SSE event; frontend replaces its message list.
+            if isinstance(data, dict) and "messages" in data:
+                serialized = [serialize_message(m) for m in data["messages"]]
+                yield format_sse("values", {"messages": serialized})
 
         elif mode == "updates":
             # Check for interrupt signal from LangGraph
-            interrupt_data = None
             if isinstance(data, dict):
                 interrupt_data = data.get("__interrupt__")
-
-            if interrupt_data is not None:
-                # Yield the sentinel tuple so the outer generator can handle it
-                yield ("__interrupt_sentinel__", interrupt_data)
-                return  # Stop consuming; outer generator will resume
+                if interrupt_data is not None:
+                    yield ("__interrupt_sentinel__", interrupt_data)
+                    return
 
 
 async def sse_generator(
@@ -201,26 +214,26 @@ async def sse_generator(
 
     Yields SSE-formatted strings for the FastAPI ``StreamingResponse``.
 
-    Frame sequence for a normal (non-interrupted) run::
+    Frame sequence for a normal run::
 
-        event: thread_id   → {"thread_id": "<uuid>"}
-        event: token       → {"content": "<delta>"} (zero or more)
-        event: message     → {<full message>} (zero or more)
-        event: done        → {}
+        event: thread_id
+        event: messages   (token chunks, zero or more)
+        event: values     (full state after each step, one or more)
+        event: done
 
-    Frame sequence for an interrupted (HITL) run::
+    Frame sequence for an interrupted run::
 
-        event: thread_id   → {"thread_id": "<uuid>"}
-        ...tokens/messages...
-        event: interrupt   → {"value": <HITLRequest>, "id": "<str>"}
-        <stream suspends — SSE connection stays open>
+        event: thread_id
+        ...messages/values...
+        event: interrupt
+        <stream suspends>
         <resume endpoint fires bus.resume()>
-        ...tokens/messages (continued)...
-        event: done        → {}
+        ...messages/values (continued)...
+        event: done
 
-    On any unhandled exception (including ``asyncio.TimeoutError``)::
+    On error::
 
-        event: error       → {"message": "<str>"}
+        event: error → {"message": "<str>"}
     """
     yield format_sse("thread_id", {"thread_id": thread_id})
 
@@ -229,20 +242,13 @@ async def sse_generator(
             stream = agent.astream(
                 {"messages": messages},
                 config={"configurable": {"thread_id": thread_id}},
-                stream_mode=["messages", "updates"],
+                stream_mode=["messages", "values", "updates"],
             )
-
-            interrupted = False
-            interrupt_value = None
 
             async for item in _process_stream_events(stream, thread_id):
                 if isinstance(item, tuple) and item[0] == "__interrupt_sentinel__":
-                    # Interrupt detected — extract value and pause
-                    interrupted = True
                     raw_interrupt = item[1]
 
-                    # LangGraph surfaces interrupts as a tuple/list of Interrupt objects.
-                    # Each Interrupt has a .value attribute holding the interrupt payload.
                     if isinstance(raw_interrupt, (list, tuple)) and raw_interrupt:
                         interrupt_obj = raw_interrupt[0]
                         interrupt_value = (
@@ -261,17 +267,13 @@ async def sse_generator(
                         },
                     )
 
-                    # Register this thread as suspended and wait for the
-                    # resume endpoint to provide decisions.
                     bus.set_interrupt(thread_id)
                     decisions = await bus.wait_for_resume(thread_id)
 
-                    # Resume the agent with a Command so HITL middleware can
-                    # apply decisions and execute (or reject) the tool call.
                     resume_stream = agent.astream(
                         Command(resume={"decisions": decisions}),
                         config={"configurable": {"thread_id": thread_id}},
-                        stream_mode=["messages", "updates"],
+                        stream_mode=["messages", "values", "updates"],
                     )
 
                     async for resumed_item in _process_stream_events(
@@ -281,7 +283,6 @@ async def sse_generator(
                             isinstance(resumed_item, tuple)
                             and resumed_item[0] == "__interrupt_sentinel__"
                         ):
-                            # Nested interrupt — handle similarly
                             nested_raw = resumed_item[1]
                             if isinstance(nested_raw, (list, tuple)) and nested_raw:
                                 nested_obj = nested_raw[0]
@@ -300,13 +301,11 @@ async def sse_generator(
                                     "id": str(id(nested_value)),
                                 },
                             )
-                            # For simplicity, stop here; further nesting is not
-                            # expected in the current agent design.
                             break
                         else:
                             yield resumed_item
 
-                    break  # Done processing the original stream after resume
+                    break
                 else:
                     yield item
 

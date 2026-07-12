@@ -185,7 +185,14 @@ def purchase_stock(symbol: str, quantity: int) -> dict:
 tools = [search_tool, get_stock_price, rag_tool, purchase_stock]
 
 endpoint = "https://models.github.ai/inference"
-llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
+# llm = ChatOpenAI(base_url=endpoint,model_name = "openai/gpt-4o-mini")
+from langchain_mistralai import ChatMistralAI
+llm = ChatMistralAI(
+            model="mistral-large-latest",
+            temperature=0,
+            max_retries=2,
+            mistral_api_key=os.environ["MISTRAL_API_KEY"]
+        )
 
 rails_config = RailsConfig.from_path("./guardrails")
 guardrails = LLMRails(rails_config)
@@ -249,10 +256,10 @@ async def create_chatbot_agent():
                 },
                 description_prefix="Tool execution pending approval",
             ),
-            PIIAnonymizationMiddleware(
-                pipeline=pipeline
-            ),
-            GuardrailsMiddleware(),
+            # PIIAnonymizationMiddleware(
+            #     pipeline=pipeline
+            # ),
+            # GuardrailsMiddleware(),
         ]
     )
     

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
         ...,
         description="OpenAI API key for LLM inference"
     )
+    MISTRAL_API_KEY: str = Field(
+        ...,
+        description="Mistral API key for LLM inference"
+    )
     OPENAI_EMBEDDING_MODEL_API_KEY: str = Field(
         ...,
         description="OpenAI API key for embedding models"

@@ -7,7 +7,12 @@ import React, {
   useCallback,
   useRef,
 } from "react";
-import { type Message, type Interrupt, type UIMessage, type StreamContextValue } from "@/lib/types";
+import {
+  type Message,
+  type Interrupt,
+  type UIMessage,
+  type StreamContextValue,
+} from "@/lib/types";
 // END sentinel — matches @langchain/langgraph END value
 const END = "__end__";
 import { parseSSE } from "@/lib/sse-parser";
@@ -18,33 +23,37 @@ import { type HITLRequest } from "@/components/thread/agent-inbox/types";
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function appendToken(messages: Message[], content: string): Message[] {
-  const streamingIdx = messages.findIndex((m) => m.id === "__streaming__");
-  if (streamingIdx >= 0) {
+/**
+ * Apply a streaming token chunk to the message list.
+ *
+ * The backend emits "messages" SSE events as [message_dict, metadata] tuples
+ * where message_dict carries the real LangGraph message id. We use that id
+ * as a stable key so that consecutive token chunks for the same AI message
+ * accumulate into the same bubble, and a new bubble is created for each
+ * distinct AI message id.
+ */
+function applyMessageChunk(
+  messages: Message[],
+  chunk: { id: string; type: string; content: string; tool_calls?: unknown[] },
+): Message[] {
+  const chunkId = chunk.id || "__streaming__";
+  const existingIdx = messages.findIndex((m) => m.id === chunkId);
+
+  if (existingIdx >= 0) {
+    // Append token to existing streaming bubble
     const updated = [...messages];
-    updated[streamingIdx] = {
-      ...updated[streamingIdx],
-      content: (updated[streamingIdx].content as string) + content,
+    updated[existingIdx] = {
+      ...updated[existingIdx],
+      content: (updated[existingIdx].content as string) + chunk.content,
     };
     return updated;
   }
 
-  // No __streaming__ placeholder → start a new streaming bubble
-  return [...messages, { id: "__streaming__", type: "ai", content } as Message];
-}
-
-function upsertMessage(messages: Message[], msg: Message): Message[] {
-  // Remove streaming placeholder
-  const withoutStreaming = messages.filter((m) => m.id !== "__streaming__");
-  const idx = withoutStreaming.findIndex((m) => m.id === msg.id);
-  if (idx >= 0) {
-    // Update existing message in place
-    const updated = [...withoutStreaming];
-    updated[idx] = msg;
-    return updated;
-  }
-  // New message — append
-  return [...withoutStreaming, msg];
+  // New streaming bubble — append to the list
+  return [
+    ...messages,
+    { id: chunkId, type: "ai", content: chunk.content } as Message,
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +75,9 @@ function useSSEStream(
 ): StreamContextValue {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [interrupt, setInterrupt] = useState<Interrupt<HITLRequest> | undefined>(undefined);
+  const [interrupt, setInterrupt] = useState<
+    Interrupt<HITLRequest> | undefined
+  >(undefined);
   const [error, setError] = useState<Error | undefined>(undefined);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -138,21 +149,27 @@ function useSSEStream(
       const threadIdParam = threadIdRef.current ?? "new";
       const msgs: Message[] = input?.messages ?? [];
 
+      // Optimistically render human messages immediately so the UI feels
+      // responsive before the first SSE event arrives.
       const humanMsgs = msgs.filter((m) => m.type === "human");
       if (humanMsgs.length > 0) {
-        // Optimistically render human messages immediately before SSE responds
         setMessages((prev) => {
           const existingIds = new Set(prev.map((m) => m.id));
-          const toAdd = humanMsgs.filter((m) => !m.id || !existingIds.has(m.id));
+          const toAdd = humanMsgs.filter(
+            (m) => !m.id || !existingIds.has(m.id),
+          );
           return toAdd.length ? [...prev, ...toAdd] : prev;
         });
       }
 
-      const extractContent = (content: any) => {
+      const extractContent = (content: unknown): string => {
         if (typeof content === "string") return content;
         if (Array.isArray(content)) {
-          const hasNonText = content.some((c) => c.type !== "text");
-          if (!hasNonText) return content.map((c) => c.text).join("\n");
+          const hasNonText = content.some(
+            (c: { type?: string }) => c.type !== "text",
+          );
+          if (!hasNonText)
+            return content.map((c: { text?: string }) => c.text ?? "").join("\n");
         }
         return JSON.stringify(content);
       };
@@ -180,53 +197,41 @@ function useSSEStream(
 
           const reader = res.body!.getReader();
 
-          // Collect all committed messages emitted during this run.
-          // On "done" we replace the full message list with these so that
-          // IDs from the backend are always authoritative and no stale
-          // __streaming__ placeholders or duplicates are left behind.
-          const committedMessages: Message[] = [];
-
           for await (const { event, data } of parseSSE(reader)) {
             if (event === "thread_id") {
+              // Backend resolved "new" → a real UUID
               const tid = (data as { thread_id: string }).thread_id;
               threadIdRef.current = tid;
               setActiveThreadId(tid);
               getThreads().then(setThreads).catch(console.error);
-            } else if (event === "token") {
-              setMessages((prev) =>
-                appendToken(prev, (data as { content: string }).content),
-              );
-            } else if (event === "message") {
-              // Accumulate — don't apply to state yet to avoid flicker/duplicates
-              const msg = data as Message;
-              const idx = committedMessages.findIndex((m) => m.id === msg.id);
-              if (idx >= 0) {
-                committedMessages[idx] = msg;
-              } else {
-                committedMessages.push(msg);
+            } else if (event === "messages") {
+              // Token-streaming event: [message_dict, metadata]
+              // Drive the per-message streaming bubble using the real message id.
+              const [msgChunk] = data as [
+                {
+                  id: string;
+                  type: string;
+                  content: string;
+                  tool_calls?: unknown[];
+                },
+                unknown,
+              ];
+              if (msgChunk?.content) {
+                setMessages((prev) => applyMessageChunk(prev, msgChunk));
+              }
+            } else if (event === "values") {
+              // Full authoritative state snapshot after every graph step.
+              // Includes ALL messages: human + AI + tool. Replace state directly.
+              // This eliminates all merge/disappear bugs because the backend
+              // always sends the complete picture.
+              const valuesData = data as { messages?: Message[] };
+              if (valuesData?.messages) {
+                setMessages(valuesData.messages);
               }
             } else if (event === "interrupt") {
-              // Apply committed messages so far before pausing
-              if (committedMessages.length > 0) {
-                setMessages(committedMessages.slice());
-              }
               setInterrupt(data as Interrupt<HITLRequest>);
               setIsLoading(false);
             } else if (event === "done") {
-              // Replace state with the authoritative backend message list
-              if (committedMessages.length > 0) {
-                setMessages(committedMessages.slice());
-              } else {
-                // No message events — promote __streaming__ to a stable id
-                // so the streamed content remains visible
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === "__streaming__"
-                      ? { ...m, id: `ai-${Date.now()}` }
-                      : m,
-                  ),
-                );
-              }
               setInterrupt(undefined);
               setIsLoading(false);
             } else if (event === "error") {
@@ -276,8 +281,7 @@ function useSSEStream(
 
       try {
         const res = await fetch(`${apiBase}/threads/${threadId}/state`);
-        if (!res.ok)
-          throw new Error(`Failed to load thread: ${res.status}`);
+        if (!res.ok) throw new Error(`Failed to load thread: ${res.status}`);
         const data: { thread_id: string; messages: Message[] } =
           await res.json();
         setMessages(data.messages ?? []);
