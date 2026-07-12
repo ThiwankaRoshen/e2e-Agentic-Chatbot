@@ -14,6 +14,10 @@ Metadata schema per chunk
     "page":        <int>,
     "chunk_index": <int>,
 }
+
+IMPORTANT: All embeddings use OpenAI text-embedding-3-small (1536 dims).
+The collection is always queried with pre-computed embeddings — never with
+raw query_texts — so Chroma never falls back to its built-in local model.
 """
 
 from __future__ import annotations
@@ -21,8 +25,17 @@ from __future__ import annotations
 import chromadb
 from chromadb import Collection
 from chromadb.config import Settings as ChromaSettings
+from langchain_openai import OpenAIEmbeddings
 
 from app.settings import settings
+
+# ── Embedding model (must match the one used during indexing) ─────────────────
+
+_embeddings = OpenAIEmbeddings(
+    openai_api_base="https://models.github.ai/inference",
+    model="text-embedding-3-small",
+    api_key=settings.OPENAI_EMBEDDING_MODEL_API_KEY,
+)
 
 # ── Client (module-level singleton) ──────────────────────────────────────────
 
@@ -54,7 +67,7 @@ def get_collection() -> Collection:
     return _collection
 
 
-def query(
+async def query(
     query_texts: list[str],
     thread_id: str,
     artifact_id: str | None = None,
@@ -64,14 +77,14 @@ def query(
     Query the collection filtered to a specific thread (and optionally a
     specific artifact).
 
+    Embeds the query using OpenAI (same model used during indexing) then
+    passes the vector directly to Chroma — never uses Chroma's built-in
+    local embedding model.
+
     Returns a list of result dicts, each with ``document`` and ``metadata``
     keys, ordered by relevance.
     """
     collection = get_collection()
-
-    where: dict = {"thread_id": thread_id}
-    if artifact_id:
-        where = {"$and": [{"thread_id": thread_id}, {"artifact_id": artifact_id}]}
 
     # Guard: Chroma raises if n_results > number of stored docs
     count = collection.count()
@@ -79,8 +92,15 @@ def query(
     if safe_n == 0:
         return []
 
+    # Embed the query with OpenAI (1536 dims — matches the collection)
+    query_embeddings = await _embeddings.aembed_documents(query_texts)
+
+    where: dict = {"thread_id": thread_id}
+    if artifact_id:
+        where = {"$and": [{"thread_id": thread_id}, {"artifact_id": artifact_id}]}
+
     results = collection.query(
-        query_texts=query_texts,
+        query_embeddings=query_embeddings,  # pre-computed — no local model used
         n_results=safe_n,
         where=where,
         include=["documents", "metadatas", "distances"],

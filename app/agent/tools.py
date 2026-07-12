@@ -33,7 +33,7 @@ from app.rag import chroma as rag_chroma
 # ── Tool: RAG (thread-scoped via Chroma) ─────────────────────────────────────
 
 @tool
-def rag_tool(query: str, config: RunnableConfig) -> str:
+async def rag_tool(query: str, config: RunnableConfig) -> str:
     """
     Retrieve relevant information from the documents attached to this
     conversation thread.
@@ -48,7 +48,7 @@ def rag_tool(query: str, config: RunnableConfig) -> str:
     if not thread_id:
         return "No thread context available — cannot search documents."
 
-    results = rag_chroma.query(
+    results = await rag_chroma.query(
         query_texts=[query],
         thread_id=thread_id,
         n_results=4,
