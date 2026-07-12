@@ -2,69 +2,105 @@ import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { toast } from "sonner";
 import { ContentBlock } from "@langchain/core/messages";
 import { fileToContentBlock } from "@/lib/multimodal-utils";
+import { useThreads } from "@/providers/Thread";
 
-export const SUPPORTED_FILE_TYPES = [
+// Image types stay inline in the message content.
+// PDFs are uploaded to the artifact endpoint.
+export const INLINE_IMAGE_TYPES = [
   "image/jpeg",
   "image/png",
   "image/gif",
   "image/webp",
-  "application/pdf",
 ];
+
+export const PDF_TYPE = "application/pdf";
+
+export const SUPPORTED_FILE_TYPES = [...INLINE_IMAGE_TYPES, PDF_TYPE];
 
 interface UseFileUploadOptions {
   initialBlocks?: ContentBlock.Multimodal.Data[];
+  /** Required for PDF artifact uploads. If null, PDFs are blocked. */
+  threadId?: string | null;
 }
 
-export function useFileUpload({ initialBlocks = [] }: UseFileUploadOptions = {}) {
-  const [contentBlocks, setContentBlocks] = useState<ContentBlock.Multimodal.Data[]>(initialBlocks);
+export function useFileUpload({
+  initialBlocks = [],
+  threadId,
+}: UseFileUploadOptions = {}) {
+  // Inline content blocks (images only — rendered inside the message bubble)
+  const [contentBlocks, setContentBlocks] = useState<
+    ContentBlock.Multimodal.Data[]
+  >(initialBlocks);
   const dropRef = useRef<HTMLDivElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const dragCounter = useRef(0);
 
-  const isDuplicate = (file: File, blocks: ContentBlock.Multimodal.Data[]) => {
-    if (file.type === "application/pdf") {
-      return blocks.some(
-        (b) => b.type === "file" && b.mimeType === "application/pdf" && b.metadata?.filename === file.name,
-      );
-    }
-    return blocks.some(
-      (b) => b.type === "image" && b.metadata?.name === file.name && b.mimeType === file.type,
+  const { uploadArtifact } = useThreads();
+
+  const isDuplicateImage = (
+    file: File,
+    blocks: ContentBlock.Multimodal.Data[],
+  ) =>
+    blocks.some(
+      (b) =>
+        b.type === "image" &&
+        b.metadata?.name === file.name &&
+        b.mimeType === file.type,
     );
+
+  const processPdf = async (file: File) => {
+    if (!threadId) {
+      toast.error("Send a message first to start a thread, then upload PDFs.");
+      return;
+    }
+    try {
+      await uploadArtifact(threadId, file);
+      toast.success(`"${file.name}" uploaded — indexing in background.`);
+    } catch (err) {
+      toast.error(`Failed to upload "${file.name}": ${(err as Error).message}`);
+    }
+  };
+
+  const processFiles = async (files: File[]) => {
+    const valid = files.filter((f) => SUPPORTED_FILE_TYPES.includes(f.type));
+    const invalid = files.filter((f) => !SUPPORTED_FILE_TYPES.includes(f.type));
+
+    if (invalid.length > 0) {
+      toast.error("Unsupported file type. Accepted: JPEG, PNG, GIF, WEBP, PDF.");
+    }
+
+    for (const file of valid) {
+      if (file.type === PDF_TYPE) {
+        await processPdf(file);
+      } else {
+        // Inline image — add to contentBlocks if not duplicate
+        if (!isDuplicateImage(file, contentBlocks)) {
+          const block = await fileToContentBlock(file);
+          setContentBlocks((prev) => [...prev, block]);
+        } else {
+          toast.error(`Duplicate image: ${file.name}`);
+        }
+      }
+    }
   };
 
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
-    const fileArray = Array.from(files);
-    const validFiles = fileArray.filter((f) => SUPPORTED_FILE_TYPES.includes(f.type));
-    const invalidFiles = fileArray.filter((f) => !SUPPORTED_FILE_TYPES.includes(f.type));
-    const uniqueFiles = validFiles.filter((f) => !isDuplicate(f, contentBlocks));
-    const duplicateFiles = validFiles.filter((f) => isDuplicate(f, contentBlocks));
-
-    if (invalidFiles.length > 0) {
-      toast.error("Invalid file type. Please upload JPEG, PNG, GIF, WEBP, or PDF.");
-    }
-    if (duplicateFiles.length > 0) {
-      toast.error(`Duplicate file(s): ${duplicateFiles.map((f) => f.name).join(", ")}`);
-    }
-
-    if (uniqueFiles.length) {
-      const newBlocks = await Promise.all(uniqueFiles.map(fileToContentBlock));
-      setContentBlocks((prev) => [...prev, ...newBlocks]);
-    }
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
+    if (!files.length) return;
+    await processFiles(files);
   };
 
   useEffect(() => {
     if (!dropRef.current) return;
 
-    const handleWindowDragEnter = (e: DragEvent) => {
+    const onDragEnter = (e: DragEvent) => {
       if (e.dataTransfer?.types?.includes("Files")) {
         dragCounter.current += 1;
         setDragOver(true);
       }
     };
-    const handleWindowDragLeave = (e: DragEvent) => {
+    const onDragLeave = (e: DragEvent) => {
       if (e.dataTransfer?.types?.includes("Files")) {
         dragCounter.current -= 1;
         if (dragCounter.current <= 0) {
@@ -73,66 +109,68 @@ export function useFileUpload({ initialBlocks = [] }: UseFileUploadOptions = {})
         }
       }
     };
-    const handleWindowDrop = async (e: DragEvent) => {
+    const onDrop = async (e: DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
       dragCounter.current = 0;
       setDragOver(false);
       if (!e.dataTransfer) return;
-
-      const files = Array.from(e.dataTransfer.files);
-      const validFiles = files.filter((f) => SUPPORTED_FILE_TYPES.includes(f.type));
-      const uniqueFiles = validFiles.filter((f) => !isDuplicate(f, contentBlocks));
-
-      if (uniqueFiles.length) {
-        const newBlocks = await Promise.all(uniqueFiles.map(fileToContentBlock));
-        setContentBlocks((prev) => [...prev, ...newBlocks]);
-      }
+      await processFiles(Array.from(e.dataTransfer.files));
     };
-    const handleWindowDragOver = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); };
-    const handleWindowDragEnd = () => { dragCounter.current = 0; setDragOver(false); };
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onDragEnd = () => {
+      dragCounter.current = 0;
+      setDragOver(false);
+    };
 
-    window.addEventListener("dragenter", handleWindowDragEnter);
-    window.addEventListener("dragleave", handleWindowDragLeave);
-    window.addEventListener("drop", handleWindowDrop);
-    window.addEventListener("dragend", handleWindowDragEnd);
-    window.addEventListener("dragover", handleWindowDragOver);
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", onDragEnd);
+    window.addEventListener("dragover", onDragOver);
 
     return () => {
-      window.removeEventListener("dragenter", handleWindowDragEnter);
-      window.removeEventListener("dragleave", handleWindowDragLeave);
-      window.removeEventListener("drop", handleWindowDrop);
-      window.removeEventListener("dragend", handleWindowDragEnd);
-      window.removeEventListener("dragover", handleWindowDragOver);
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", onDragEnd);
+      window.removeEventListener("dragover", onDragOver);
       dragCounter.current = 0;
     };
-  }, [contentBlocks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentBlocks, threadId]);
 
-  const removeBlock = (idx: number) => setContentBlocks((prev) => prev.filter((_, i) => i !== idx));
+  const removeBlock = (idx: number) =>
+    setContentBlocks((prev) => prev.filter((_, i) => i !== idx));
   const resetBlocks = () => setContentBlocks([]);
 
-  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
-    const items = e.clipboardData.items;
-    if (!items) return;
+  const handlePaste = async (
+    e: React.ClipboardEvent<HTMLTextAreaElement | HTMLInputElement>,
+  ) => {
     const files: File[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
+    for (let i = 0; i < e.clipboardData.items.length; i++) {
+      const item = e.clipboardData.items[i];
       if (item.kind === "file") {
-        const file = item.getAsFile();
-        if (file) files.push(file);
+        const f = item.getAsFile();
+        if (f) files.push(f);
       }
     }
     if (!files.length) return;
     e.preventDefault();
-
-    const validFiles = files.filter((f) => SUPPORTED_FILE_TYPES.includes(f.type));
-    const uniqueFiles = validFiles.filter((f) => !isDuplicate(f, contentBlocks));
-
-    if (uniqueFiles.length) {
-      const newBlocks = await Promise.all(uniqueFiles.map(fileToContentBlock));
-      setContentBlocks((prev) => [...prev, ...newBlocks]);
-    }
+    await processFiles(files);
   };
 
-  return { contentBlocks, setContentBlocks, handleFileUpload, dropRef, removeBlock, resetBlocks, dragOver, handlePaste };
+  return {
+    contentBlocks,
+    setContentBlocks,
+    handleFileUpload,
+    dropRef,
+    removeBlock,
+    resetBlocks,
+    dragOver,
+    handlePaste,
+  };
 }

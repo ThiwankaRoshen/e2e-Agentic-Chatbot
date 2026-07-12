@@ -72,8 +72,23 @@ export interface Interrupt<T = unknown> {
 
 export interface ThreadSummary {
   thread_id: string;
+  title: string;
   created_at: string;
-  first_message: string;
+  updated_at: string;
+}
+
+// ─── Artifact from GET /threads/{id}/artifacts ────────────────────────────────
+
+export type ArtifactStatus = "uploaded" | "indexing" | "indexed" | "failed";
+
+export interface Artifact {
+  id: string;
+  thread_id: string;
+  filename: string;
+  mime_type: string;
+  status: ArtifactStatus;
+  error_message: string | null;
+  created_at: string;
 }
 
 // ─── Decision types ───────────────────────────────────────────────────────────

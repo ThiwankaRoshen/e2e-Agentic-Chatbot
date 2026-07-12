@@ -21,6 +21,7 @@ import {
   SquarePen,
   XIcon,
   Plus,
+  PanelRight,
 } from "lucide-react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
@@ -36,6 +37,7 @@ import {
   ArtifactTitle,
   useArtifactContext,
 } from "./artifact";
+import { ArtifactsPanel } from "./artifacts-panel";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sub-components
@@ -78,7 +80,7 @@ function ScrollToBottom(props: { className?: string; hidden?: boolean }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Props — state lives in App, passed down instead of URL query params
+// Props
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface ThreadProps {
@@ -107,6 +109,9 @@ export function Thread({
   const [artifactContext, setArtifactContext] = useArtifactContext();
   const [artifactOpen, closeArtifact] = useArtifactOpen();
 
+  // Whether the documents (artifacts) panel is open
+  const [docsPanelOpen, setDocsPanelOpen] = useState(false);
+
   const [input, setInput] = useState("");
   const {
     contentBlocks,
@@ -116,7 +121,8 @@ export function Thread({
     removeBlock,
     dragOver,
     handlePaste,
-  } = useFileUpload();
+  } = useFileUpload({ threadId: activeThreadId });
+
   const [firstTokenReceived, setFirstTokenReceived] = useState(false);
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
 
@@ -129,6 +135,7 @@ export function Thread({
   const handleNewThread = () => {
     closeArtifact();
     setArtifactContext({});
+    setDocsPanelOpen(false);
     onNewThread();
   };
 
@@ -210,7 +217,9 @@ export function Thread({
     setContentBlocks([]);
   };
 
-  const handleRegenerate = (_parentCheckpoint: Checkpoint | null | undefined) => {
+  const handleRegenerate = (
+    _parentCheckpoint: Checkpoint | null | undefined,
+  ) => {
     // no-op — branch switching not supported by the FastAPI backend
   };
 
@@ -221,7 +230,7 @@ export function Thread({
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
-      {/* Sliding history sidebar (desktop) */}
+      {/* ── Sliding history sidebar (desktop) ─────────────────────────────── */}
       <div className="relative hidden lg:flex">
         <motion.div
           className="absolute z-20 h-full overflow-hidden border-r bg-white"
@@ -237,6 +246,8 @@ export function Thread({
           <div className="relative h-full" style={{ width: 300 }}>
             <ThreadHistory
               activeThreadId={activeThreadId}
+              setActiveThreadId={setActiveThreadId}
+              onNewThread={handleNewThread}
               chatHistoryOpen={chatHistoryOpen}
               setChatHistoryOpen={setChatHistoryOpen}
             />
@@ -244,12 +255,18 @@ export function Thread({
         </motion.div>
       </div>
 
+      {/* ── Main area + optional docs panel ──────────────────────────────── */}
       <div
         className={cn(
-          "grid w-full grid-cols-[1fr_0fr] transition-all duration-500",
-          artifactOpen && "grid-cols-[3fr_2fr]",
+          "grid w-full transition-all duration-300",
+          artifactOpen
+            ? "grid-cols-[3fr_2fr]"
+            : docsPanelOpen
+              ? "grid-cols-[1fr_280px]"
+              : "grid-cols-[1fr_0fr]",
         )}
       >
+        {/* ── Chat column ───────────────────────────────────────────────── */}
         <motion.div
           className={cn(
             "relative flex min-w-0 flex-1 flex-col overflow-hidden",
@@ -270,7 +287,7 @@ export function Thread({
               : { duration: 0 }
           }
         >
-          {/* Header */}
+          {/* Header — pre-chat */}
           {!chatStarted && (
             <div className="absolute top-0 left-0 z-10 flex w-full items-center justify-between gap-3 p-2 pl-4">
               <div>
@@ -290,6 +307,8 @@ export function Thread({
               </div>
             </div>
           )}
+
+          {/* Header — active chat */}
           {chatStarted && (
             <div className="relative z-10 flex items-center justify-between gap-3 p-2">
               <div className="relative flex items-center justify-start gap-2">
@@ -321,7 +340,19 @@ export function Thread({
                 </motion.button>
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                {/* Documents panel toggle — only when thread is active */}
+                {activeThreadId && (
+                  <TooltipIconButton
+                    size="lg"
+                    className="p-4"
+                    tooltip={docsPanelOpen ? "Hide documents" : "Show documents"}
+                    variant="ghost"
+                    onClick={() => setDocsPanelOpen((v) => !v)}
+                  >
+                    <PanelRight className="size-5" />
+                  </TooltipIconButton>
+                )}
                 <TooltipIconButton
                   size="lg"
                   className="p-4"
@@ -343,6 +374,7 @@ export function Thread({
               contentClassName="pt-8 pb-4 max-w-3xl mx-auto flex flex-col gap-4 w-full justify-end min-h-full"
               content={
                 <>
+                  {/* Welcome screen */}
                   {!chatStarted && (
                     <div className="flex flex-1 flex-col items-center justify-center gap-6 py-8 px-4 text-center min-h-[calc(100vh-160px)]">
                       <LangGraphLogoSVG className="h-12 flex-shrink-0 text-gray-700" />
@@ -351,7 +383,8 @@ export function Thread({
                           Agent Chat
                         </h1>
                         <p className="text-base text-gray-500 max-w-md">
-                          Ask me anything — I can reason, search, and take actions on your behalf.
+                          Ask me anything — I can reason, search, and take
+                          actions on your behalf.
                         </p>
                       </div>
                       <div className="flex flex-wrap justify-center gap-2 max-w-xl">
@@ -373,6 +406,8 @@ export function Thread({
                       </div>
                     </div>
                   )}
+
+                  {/* Messages */}
                   {messages
                     .filter((m) => !m.id?.startsWith(DO_NOT_RENDER_ID_PREFIX))
                     .map((message, index) =>
@@ -392,6 +427,7 @@ export function Thread({
                         />
                       ),
                     )}
+
                   {hasNoAIOrToolMessages && !!stream.interrupt && (
                     <AssistantMessage
                       key="interrupt-msg"
@@ -408,7 +444,10 @@ export function Thread({
               }
               footer={
                 <div className="sticky bottom-0 flex flex-col items-center gap-4 bg-white pb-4">
-                  <ScrollToBottom hidden={!chatStarted} className="animate-in fade-in-0 zoom-in-95 absolute bottom-full left-1/2 mb-4 -translate-x-1/2" />
+                  <ScrollToBottom
+                    hidden={!chatStarted}
+                    className="animate-in fade-in-0 zoom-in-95 absolute bottom-full left-1/2 mb-4 -translate-x-1/2"
+                  />
 
                   {/* Input form */}
                   <div
@@ -424,7 +463,10 @@ export function Thread({
                       onSubmit={handleSubmit}
                       className="mx-auto grid max-w-3xl grid-rows-[1fr_auto] gap-2"
                     >
-                      <ContentBlocksPreview blocks={contentBlocks} onRemove={removeBlock} />
+                      <ContentBlocksPreview
+                        blocks={contentBlocks}
+                        onRemove={removeBlock}
+                      />
                       <textarea
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
@@ -437,7 +479,9 @@ export function Thread({
                             !e.nativeEvent.isComposing
                           ) {
                             e.preventDefault();
-                            (e.target as HTMLElement).closest("form")?.requestSubmit();
+                            (e.target as HTMLElement)
+                              .closest("form")
+                              ?.requestSubmit();
                           }
                         }}
                         placeholder="Type your message..."
@@ -451,7 +495,10 @@ export function Thread({
                             checked={hideToolCalls}
                             onCheckedChange={setHideToolCalls}
                           />
-                          <Label htmlFor="render-tool-calls" className="text-sm text-gray-600">
+                          <Label
+                            htmlFor="render-tool-calls"
+                            className="text-sm text-gray-600"
+                          >
                             Hide Tool Calls
                           </Label>
                         </div>
@@ -461,7 +508,9 @@ export function Thread({
                           className="flex cursor-pointer items-center gap-2"
                         >
                           <Plus className="size-5 text-gray-600" />
-                          <span className="text-sm text-gray-600">Upload PDF or Image</span>
+                          <span className="text-sm text-gray-600">
+                            Upload PDF or Image
+                          </span>
                         </Label>
                         <input
                           id="file-input"
@@ -473,7 +522,11 @@ export function Thread({
                         />
 
                         {stream.isLoading ? (
-                          <Button key="stop" onClick={() => stream.stop()} className="ml-auto">
+                          <Button
+                            key="stop"
+                            onClick={() => stream.stop()}
+                            className="ml-auto"
+                          >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
                             Cancel
                           </Button>
@@ -499,18 +552,40 @@ export function Thread({
           </StickToBottom>
         </motion.div>
 
-        {/* Artifact panel */}
-        <div className="relative flex flex-col border-l">
-          <div className="absolute inset-0 flex min-w-[30vw] flex-col">
-            <div className="grid grid-cols-[1fr_auto] border-b p-4">
-              <ArtifactTitle className="truncate overflow-hidden" />
-              <button onClick={closeArtifact} className="cursor-pointer">
-                <XIcon className="size-5" />
+        {/* ── Right panel (generative artifact OR documents) ─────────────── */}
+        {artifactOpen ? (
+          <div className="relative flex flex-col border-l">
+            <div className="absolute inset-0 flex min-w-[30vw] flex-col">
+              <div className="grid grid-cols-[1fr_auto] border-b p-4">
+                <ArtifactTitle className="truncate overflow-hidden" />
+                <button onClick={closeArtifact} className="cursor-pointer">
+                  <XIcon className="size-5" />
+                </button>
+              </div>
+              <ArtifactContent className="relative flex-grow" />
+            </div>
+          </div>
+        ) : docsPanelOpen && activeThreadId ? (
+          <div className="flex flex-col border-l bg-white">
+            <div className="flex items-center justify-between border-b px-3 py-2">
+              <span className="text-sm font-semibold text-gray-700">
+                Documents
+              </span>
+              <button
+                onClick={() => setDocsPanelOpen(false)}
+                className="cursor-pointer text-gray-400 hover:text-gray-600"
+              >
+                <XIcon className="size-4" />
               </button>
             </div>
-            <ArtifactContent className="relative flex-grow" />
+            <div className="flex-1 overflow-y-auto p-2">
+              <ArtifactsPanel threadId={activeThreadId} />
+            </div>
           </div>
-        </div>
+        ) : (
+          // Empty zero-width placeholder to keep the grid valid
+          <div />
+        )}
       </div>
     </div>
   );
