@@ -180,6 +180,12 @@ function useSSEStream(
 
           const reader = res.body!.getReader();
 
+          // Collect all committed messages emitted during this run.
+          // On "done" we replace the full message list with these so that
+          // IDs from the backend are always authoritative and no stale
+          // __streaming__ placeholders or duplicates are left behind.
+          const committedMessages: Message[] = [];
+
           for await (const { event, data } of parseSSE(reader)) {
             if (event === "thread_id") {
               const tid = (data as { thread_id: string }).thread_id;
@@ -191,11 +197,36 @@ function useSSEStream(
                 appendToken(prev, (data as { content: string }).content),
               );
             } else if (event === "message") {
-              setMessages((prev) => upsertMessage(prev, data as Message));
+              // Accumulate — don't apply to state yet to avoid flicker/duplicates
+              const msg = data as Message;
+              const idx = committedMessages.findIndex((m) => m.id === msg.id);
+              if (idx >= 0) {
+                committedMessages[idx] = msg;
+              } else {
+                committedMessages.push(msg);
+              }
             } else if (event === "interrupt") {
+              // Apply committed messages so far before pausing
+              if (committedMessages.length > 0) {
+                setMessages(committedMessages.slice());
+              }
               setInterrupt(data as Interrupt<HITLRequest>);
               setIsLoading(false);
             } else if (event === "done") {
+              // Replace state with the authoritative backend message list
+              if (committedMessages.length > 0) {
+                setMessages(committedMessages.slice());
+              } else {
+                // No message events — promote __streaming__ to a stable id
+                // so the streamed content remains visible
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === "__streaming__"
+                      ? { ...m, id: `ai-${Date.now()}` }
+                      : m,
+                  ),
+                );
+              }
               setInterrupt(undefined);
               setIsLoading(false);
             } else if (event === "error") {

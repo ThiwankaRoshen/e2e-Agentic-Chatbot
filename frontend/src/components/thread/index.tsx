@@ -62,9 +62,9 @@ function StickyToBottomContent(props: {
   );
 }
 
-function ScrollToBottom(props: { className?: string }) {
+function ScrollToBottom(props: { className?: string; hidden?: boolean }) {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-  if (isAtBottom) return null;
+  if (isAtBottom || props.hidden) return null;
   return (
     <Button
       variant="outline"
@@ -340,9 +340,39 @@ export function Thread({
           <StickToBottom className="relative flex-1 overflow-hidden">
             <StickyToBottomContent
               className="absolute inset-0 overflow-y-scroll px-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent"
-              contentClassName="pt-8 pb-4 max-w-3xl mx-auto flex flex-col gap-4 w-full min-h-full"
+              contentClassName="pt-8 pb-4 max-w-3xl mx-auto flex flex-col gap-4 w-full justify-end min-h-full"
               content={
                 <>
+                  {!chatStarted && (
+                    <div className="flex flex-1 flex-col items-center justify-center gap-6 py-8 px-4 text-center min-h-[calc(100vh-160px)]">
+                      <LangGraphLogoSVG className="h-12 flex-shrink-0 text-gray-700" />
+                      <div className="flex flex-col gap-2">
+                        <h1 className="text-3xl font-bold tracking-tight text-gray-900">
+                          Agent Chat
+                        </h1>
+                        <p className="text-base text-gray-500 max-w-md">
+                          Ask me anything — I can reason, search, and take actions on your behalf.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-2 max-w-xl">
+                        {[
+                          "Summarise the latest news on AI",
+                          "Help me draft an email",
+                          "Explain a concept step by step",
+                          "Write and run some code",
+                        ].map((prompt) => (
+                          <button
+                            key={prompt}
+                            type="button"
+                            onClick={() => setInput(prompt)}
+                            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm hover:border-gray-300 hover:bg-gray-50 transition-colors"
+                          >
+                            {prompt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {messages
                     .filter((m) => !m.id?.startsWith(DO_NOT_RENDER_ID_PREFIX))
                     .map((message, index) =>
@@ -378,38 +408,7 @@ export function Thread({
               }
               footer={
                 <div className="sticky bottom-0 flex flex-col items-center gap-4 bg-white pb-4">
-                  {!chatStarted && (
-                    <div className="flex flex-col items-center gap-6 pt-[20vh] pb-4 px-4 text-center">
-                      <LangGraphLogoSVG className="h-12 flex-shrink-0 text-gray-700" />
-                      <div className="flex flex-col gap-2">
-                        <h1 className="text-3xl font-bold tracking-tight text-gray-900">
-                          Agent Chat
-                        </h1>
-                        <p className="text-base text-gray-500 max-w-md">
-                          Ask me anything — I can reason, search, and take actions on your behalf.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap justify-center gap-2 max-w-xl">
-                        {[
-                          "Summarise the latest news on AI",
-                          "Help me draft an email",
-                          "Explain a concept step by step",
-                          "Write and run some code",
-                        ].map((prompt) => (
-                          <button
-                            key={prompt}
-                            type="button"
-                            onClick={() => setInput(prompt)}
-                            className="rounded-full border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm hover:border-gray-300 hover:bg-gray-50 transition-colors"
-                          >
-                            {prompt}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <ScrollToBottom className="animate-in fade-in-0 zoom-in-95 absolute bottom-full left-1/2 mb-4 -translate-x-1/2" />
+                  <ScrollToBottom hidden={!chatStarted} className="animate-in fade-in-0 zoom-in-95 absolute bottom-full left-1/2 mb-4 -translate-x-1/2" />
 
                   {/* Input form */}
                   <div
