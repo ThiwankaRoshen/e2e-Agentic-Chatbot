@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services.agent_runner import format_sse
+from app.services.agent_runner import sse_generator  # noqa: PLC0415
 
 router = APIRouter()
 
@@ -90,23 +91,13 @@ async def stream_run(
     # Convert messages to plain dicts for the generator
     messages = [{"type": m.type, "content": m.content} for m in request_body.messages]
 
-    # Use real sse_generator when available (Task 7.2), otherwise stub
-    try:
-        from app.services.agent_runner import sse_generator  # noqa: PLC0415
 
-        generator = sse_generator(
-            thread_id=thread_id,
-            messages=messages,
-            agent=request.app.state.agent,
-            bus=request.app.state.interrupt_bus,
-        )
-    except ImportError:
-        generator = _stub_sse_generator(
-            thread_id=thread_id,
-            messages=messages,
-            agent=request.app.state.agent,
-            bus=request.app.state.interrupt_bus,
-        )
+    generator = sse_generator(
+        thread_id=thread_id,
+        messages=messages,
+        agent=request.app.state.agent,
+        bus=request.app.state.interrupt_bus,
+    )
 
     return StreamingResponse(
         generator,
