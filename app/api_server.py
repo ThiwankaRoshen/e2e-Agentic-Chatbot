@@ -1,3 +1,18 @@
+"""
+FastAPI application factory and lifespan handler.
+
+Startup
+-------
+1. Create SQLAlchemy async engine and run DDL (create tables if needed)
+2. Initialise the LangGraph agent (LLM, tools, checkpointer, middleware)
+3. Create the InterruptBus for HITL suspend/resume coordination
+4. Ensure the uploads directory exists
+
+Shutdown
+--------
+1. Dispose the SQLAlchemy engine (closes connection pool)
+"""
+
 from __future__ import annotations
 
 import logging
@@ -5,55 +20,42 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-import aiosqlite
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent import create_chatbot_agent
+from app.db.base import build_engine, build_session_factory, create_tables
 from app.services.agent_runner import InterruptBus
-from app.services.thread_meta_store import ThreadMetaStore
 from app.settings import settings
 
-from app.routers.health import router as health_router  
-from app.routers.threads import router as threads_router  
-from app.routers.runs import router as runs_router  
+from app.routers.health import router as health_router
+from app.routers.threads import router as threads_router
+from app.routers.runs import router as runs_router
+from app.routers.artifacts import router as artifacts_router
 
 logger = logging.getLogger(__name__)
 
 
-
-
-
-# ---------------------------------------------------------------------------
-# Lifespan handler
-# ---------------------------------------------------------------------------
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """
-    Application lifespan handler.
+    """Application startup and shutdown logic."""
+    try:
+        # 1. SQLAlchemy — metadata database
+        engine = build_engine()
+        await create_tables(engine)
+        app.state.db_engine = engine
+        app.state.db_session_factory = build_session_factory(engine)
 
-    On startup:
-      - Validates environment variables
-      - Initialises the LangGraph agent (FAISS, SQLite, GLiNER2)
-      - Creates the ThreadMetaStore and InterruptBus
-      - Stores everything on app.state for use by route handlers
-
-    On shutdown:
-      - Closes the aiosqlite connection
-    """
-    try:  
-
+        # 2. LangGraph agent
         app.state.agent = await create_chatbot_agent()
 
-        db_conn = await aiosqlite.connect(settings.SQLITE_DB_PATH)
-        app.state.db_conn = db_conn
-
-        store = ThreadMetaStore(db_conn)
-        await store.ensure_table()
-        app.state.thread_meta_store = store
-
+        # 3. HITL interrupt bus
         app.state.interrupt_bus = InterruptBus()
+
+        # 4. Ensure uploads directory exists
+        os.makedirs(settings.UPLOADS_DIR, exist_ok=True)
 
         logger.info("API server startup complete.")
     except Exception as exc:
@@ -62,30 +64,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
-    if getattr(app.state, "db_conn", None) is not None:
-        await app.state.db_conn.close()
-        logger.info("Database connection closed.")
+    # Shutdown
+    if getattr(app.state, "db_engine", None) is not None:
+        await app.state.db_engine.dispose()
+        logger.info("Database engine disposed.")
+
     logger.info("API server shutdown complete.")
 
 
-# ---------------------------------------------------------------------------
-# Application factory
-# ---------------------------------------------------------------------------
+# ── Application factory ───────────────────────────────────────────────────────
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-
     application = FastAPI(
         title="Agentic Chatbot API",
-        description="FastAPI backend wrapping the LangGraph agentic chatbot.",
-        version="1.0.0",
+        description="FastAPI backend for the LangGraph agentic chatbot.",
+        version="2.0.0",
         lifespan=lifespan,
     )
 
-    # --- CORS --- 
-    cors_origins_raw = os.environ.get("CORS_ORIGINS", "http://localhost:5173")
-    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
-
+    # CORS
+    cors_origins = [
+        o.strip()
+        for o in settings.CORS_ORIGINS.split(",")
+        if o.strip()
+    ]
     application.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -94,15 +97,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # --- Router registration ---
+    # Routers
     application.include_router(health_router)
-
     application.include_router(threads_router)
-
     application.include_router(runs_router)
+    application.include_router(artifacts_router)
 
     return application
 
 
-# Module-level app instance used by uvicorn
 app = create_app()

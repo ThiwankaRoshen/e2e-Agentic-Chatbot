@@ -1,23 +1,27 @@
+"""
+Run endpoints.
+
+POST /threads/{thread_id}/runs/stream   — start a streaming agent run
+POST /threads/{thread_id}/runs/resume   — resume a suspended (HITL) run
+"""
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.services.agent_runner import format_sse
-from app.services.agent_runner import sse_generator  # noqa: PLC0415
+from app.db.repositories import ThreadRepository
+from app.services.agent_runner import sse_generator
 
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
-
+# ── Request models ────────────────────────────────────────────────────────────
 
 class MessageInput(BaseModel):
     type: str
@@ -38,10 +42,7 @@ class ResumeRequest(BaseModel):
     decisions: list[DecisionInput]
 
 
-async def _stub_sse_generator(thread_id, messages, agent, bus):
-    yield format_sse("thread_id", {"thread_id": thread_id})
-    yield format_sse("done", {})
-
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/threads/{thread_id}/runs/stream")
 async def stream_run(
@@ -52,12 +53,12 @@ async def stream_run(
     """
     Start a streaming agent run for the given thread.
 
-    If ``thread_id`` is the literal string ``"new"``, a fresh UUID4 is
-    generated before the run begins.
-
-    The response is a text/event-stream SSE stream.  The first frame is
-    always ``event: thread_id`` so the frontend can bind to the resolved ID.
+    If ``thread_id`` is the literal string ``"new"``, a fresh UUID is
+    generated.  The first SSE frame is always ``event: thread_id`` so
+    the frontend can bind to the resolved ID.
     """
+    session_factory = request.app.state.db_session_factory
+
     # Resolve "new" → fresh UUID
     if thread_id == "new":
         thread_id = str(uuid.uuid4())
@@ -70,27 +71,22 @@ async def stream_run(
             ),
         )
 
-    # Extract first human message for metadata storage
-    first_human_message: str = ""
+    # Derive thread title from the first human message
+    title = ""
     for msg in request_body.messages:
         if msg.type == "human":
-            first_human_message = msg.content
+            title = msg.content[:500]
             break
-    else:
-        # Fallback: use content of the very first message
-        if request_body.messages:
-            first_human_message = request_body.messages[0].content
+    if not title and request_body.messages:
+        title = request_body.messages[0].content[:500]
 
-    # Persist thread metadata
-    await request.app.state.thread_meta_store.insert(
-        thread_id,
-        datetime.utcnow().isoformat(),
-        first_human_message,
-    )
+    # Persist thread metadata (no-op if already exists)
+    async with session_factory() as session:
+        async with session.begin():
+            repo = ThreadRepository(session)
+            await repo.create(thread_id=thread_id, title=title)
 
-    # Convert messages to plain dicts for the generator
     messages = [{"type": m.type, "content": m.content} for m in request_body.messages]
-
 
     generator = sse_generator(
         thread_id=thread_id,
@@ -116,12 +112,9 @@ async def resume_run(
     request: Request,
 ) -> dict:
     """
-    Resume a suspended (HITL-interrupted) agent run for the given thread.
+    Resume a suspended (HITL-interrupted) agent run.
 
-    The thread must currently be suspended at an interrupt; if it is not,
-    a 409 Conflict is returned.  Once decisions are delivered via the
-    ``InterruptBus``, the waiting SSE generator is unblocked and continues
-    streaming to the original client.
+    The thread must be currently suspended; otherwise a 409 is returned.
     """
     if not request.app.state.interrupt_bus.is_suspended(thread_id):
         raise HTTPException(

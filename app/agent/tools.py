@@ -1,14 +1,20 @@
 """
-Tool definitions and RAG utilities.
+Tool definitions.
 
-Exports
--------
-tools
-    List of all LangChain tools passed to create_agent().
-load_pdf_and_create_vector_store(pdf_path)
-    Index a PDF into the FAISS vector store.
-INDEX_PATH
-    Filesystem path of the FAISS index directory.
+All tools are registered in the ``tools`` list at the bottom of this module
+and passed to ``create_agent()`` in factory.py.
+
+RAG tool
+--------
+``rag_tool`` is thread-scoped.  The backend injects ``thread_id`` via a
+LangChain RunnableConfig so the LLM never has access to it and cannot
+accidentally search another thread's documents.
+
+Usage inside the agent graph (set in the config at runtime)::
+
+    config = {"configurable": {"thread_id": "<uuid>"}}
+
+The tool reads ``thread_id`` from the config at call time.
 """
 
 from __future__ import annotations
@@ -18,70 +24,49 @@ import random
 
 import requests
 from langchain.tools import tool
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_core.runnables import RunnableConfig
 from langchain_tavily import TavilySearch
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
+from app.rag import chroma as rag_chroma
 
-_embeddings = OpenAIEmbeddings(
-    openai_api_base="https://models.github.ai/inference",
-    model="text-embedding-3-small",
-    api_key=os.environ["OPENAI_EMBEDDING_MODEL_API_KEY"],
-)
-
-# ── RAG utilities ─────────────────────────────────────────────────────────────
-
-INDEX_PATH = "faiss_index"
-
-_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
-
-def load_pdf_and_create_vector_store(pdf_path: str) -> None:
-    """Load a PDF, split it into chunks, and save a FAISS index to disk."""
-    loader = PyPDFLoader(pdf_path)
-    docs = loader.load()
-    chunks = _splitter.split_documents(docs)
-    vector_store = FAISS.from_documents(chunks, _embeddings)
-    vector_store.save_local(INDEX_PATH)
-
-
-def _get_retriever():
-    return FAISS.load_local(
-        folder_path=INDEX_PATH,
-        embeddings=_embeddings,
-        allow_dangerous_deserialization=True,
-    ).as_retriever(search_type="similarity", search_kwargs={"k": 4})
-
-
-# ── Tool: RAG ─────────────────────────────────────────────────────────────────
+# ── Tool: RAG (thread-scoped via Chroma) ─────────────────────────────────────
 
 @tool
-def rag_tool(query: str) -> str:
+def rag_tool(query: str, config: RunnableConfig) -> str:
     """
-    Retrieve relevant information from the PDF document.
-    Use this tool when the user asks factual or conceptual questions that may
-    be answered using the stored PDF documents.
+    Retrieve relevant information from the documents attached to this
+    conversation thread.
+
+    Use this tool when the user asks factual or conceptual questions that
+    may be answered by files they have uploaded.
 
     Args:
-        query: The question or search query used to retrieve PDF content.
+        query: The question or search query.
     """
-    documents = _get_retriever().invoke(query)
+    thread_id: str | None = config.get("configurable", {}).get("thread_id")
+    if not thread_id:
+        return "No thread context available — cannot search documents."
 
-    if not documents:
-        return "No relevant information was found in the PDF."
+    results = rag_chroma.query(
+        query_texts=[query],
+        thread_id=thread_id,
+        n_results=4,
+    )
+
+    if not results:
+        return "No relevant information was found in the uploaded documents."
 
     formatted = []
-    for i, doc in enumerate(documents, start=1):
-        source = doc.metadata.get("source", "Unknown source")
-        page = doc.metadata.get("page", "Unknown page")
+    for i, item in enumerate(results, start=1):
+        meta = item["metadata"]
         formatted.append(
-            f"\nDocument: {i}\nSource: {source}\nPage: {page}\nContent: {doc.page_content}"
+            f"Document {i}\n"
+            f"File: {meta.get('filename', 'unknown')}  "
+            f"Page: {meta.get('page', '?')}\n"
+            f"{item['document']}"
         )
 
-    return "\n\n".join(formatted)
+    return "\n\n---\n\n".join(formatted)
 
 
 # ── Tool: web search ──────────────────────────────────────────────────────────

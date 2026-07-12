@@ -44,11 +44,22 @@ class Settings(BaseSettings):
     )
     SQLITE_DB_PATH: str = Field(
         default="chatbot_state.db",
-        description="Path to SQLite database file"
+        description="Path to SQLite database file used by the LangGraph checkpointer"
     )
-    FAISS_INDEX_PATH: str = Field(
-        default="faiss_index",
-        description="Path to FAISS index directory"
+    DATABASE_URL: str = Field(
+        default="sqlite+aiosqlite:///./app_metadata.db",
+        description=(
+            "SQLAlchemy async database URL for application metadata. "
+            "Defaults to SQLite. Swap to postgresql+asyncpg://... for Postgres."
+        ),
+    )
+    CHROMA_PATH: str = Field(
+        default="./chroma_db",
+        description="Directory where ChromaDB persists its data",
+    )
+    UPLOADS_DIR: str = Field(
+        default="./uploads",
+        description="Directory where uploaded artifact files are stored",
     )
     CORS_ORIGINS: str = Field(
         default="http://localhost:3000",

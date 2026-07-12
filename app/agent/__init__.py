@@ -1,13 +1,10 @@
 """
-Agent package — re-exports the public API so existing callers
-(api_server.py, streamlit_app.py) don't need import changes.
+Agent package — public API.
+
+Existing callers only need ``create_chatbot_agent``.
+PDF indexing is now handled by the artifact upload pipeline in app/rag/.
 """
 
 from app.agent.factory import create_chatbot_agent
-from app.agent.tools import load_pdf_and_create_vector_store, INDEX_PATH
 
-__all__ = [
-    "create_chatbot_agent",
-    "load_pdf_and_create_vector_store",
-    "INDEX_PATH",
-]
+__all__ = ["create_chatbot_agent"]
