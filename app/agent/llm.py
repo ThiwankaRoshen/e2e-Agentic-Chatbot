@@ -8,10 +8,10 @@ just imports `llm` rather than repeating credentials/config.
 import os
 
 from langchain_mistralai import ChatMistralAI
-
+from app.settings import settings
 llm = ChatMistralAI(
     model="mistral-large-latest",
     temperature=0,
     max_retries=2,
-    mistral_api_key=os.environ["MISTRAL_API_KEY"],
+    mistral_api_key=settings.MISTRAL_API_KEY,
 )

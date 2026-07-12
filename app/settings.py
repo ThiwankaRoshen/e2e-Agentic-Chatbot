@@ -62,7 +62,7 @@ class Settings(BaseSettings):
         description="Directory where uploaded artifact files are stored",
     )
     CORS_ORIGINS: str = Field(
-        default="http://localhost:3000",
+        default="http://localhost:5173",
         description="Comma-separated list of allowed CORS origins"
     )
     

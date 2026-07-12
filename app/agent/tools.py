@@ -27,6 +27,7 @@ from langchain.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langchain_tavily import TavilySearch
 
+from app.settings import settings
 from app.rag import chroma as rag_chroma
 
 # ── Tool: RAG (thread-scoped via Chroma) ─────────────────────────────────────
@@ -75,6 +76,7 @@ search_tool = TavilySearch(
     max_results=5,
     topic="general",
     search_depth="advanced",
+    tavily_api_key=settings.TAVILY_API_KEY
 )
 
 
@@ -88,7 +90,7 @@ def get_stock_price(symbol: str) -> dict:
     Returns a dict with symbol, price, change, change_percent, volume,
     and latest_trading_day fields.
     """
-    api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+    api_key = settings.ALPHA_VANTAGE_API_KEY
     if not api_key:
         return {"error": "ALPHA_VANTAGE_API_KEY not configured"}
 

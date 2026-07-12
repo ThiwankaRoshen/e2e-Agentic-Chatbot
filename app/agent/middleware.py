@@ -14,7 +14,7 @@ from nemoguardrails import LLMRails, RailsConfig
 
 
 # Initialise rails once at import time (loads YAML config from ./guardrails/).
-_rails_config = RailsConfig.from_path("./guardrails")
+_rails_config = RailsConfig.from_path("./app/guardrails")
 _guardrails = LLMRails(_rails_config)
 
 
