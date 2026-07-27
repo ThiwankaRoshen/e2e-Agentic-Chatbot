@@ -1,37 +1,33 @@
-FROM python:3.11-slim
+FROM python:3.12-slim AS base
 
-# Prevent Python cache files and enable immediate container logs
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+# Create the user BEFORE any content exists in the image. 
+RUN useradd --create-home --no-log-init --uid 1000 \
+    --shell /usr/sbin/nologin appuser
 
 WORKDIR /app
+RUN chown appuser:appuser /app 
 
-# build-essential supports packages that require compilation
-# libgomp1 is commonly required by faiss-cpu
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+# Ownership is set per-file as part of the COPY itself — no second pass
+COPY --chown=appuser:appuser pyproject.toml uv.lock ./
 
-# Copy project metadata and lock file first for Docker build caching
-COPY pyproject.toml uv.lock .
+USER appuser
+RUN uv sync --frozen --no-install-project --no-dev
 
-# Install uv and sync dependencies from the lock file
-RUN python -m pip install --upgrade pip && \
-    python -m pip install --no-cache-dir uv && \
-    uv sync --no-dev
+COPY --chown=appuser:appuser app/ ./app/
+RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Copy the complete project
-COPY . .
+EXPOSE 8000
 
-EXPOSE 8501
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')" || exit 1
 
-
-CMD ["streamlit", "run", "app/streamlit_app.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--browser.gatherUsageStats=false"]
+CMD ["uvicorn", "app.api_server:app", "--host", "0.0.0.0", "--port", "8000"]

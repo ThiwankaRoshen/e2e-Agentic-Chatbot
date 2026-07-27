@@ -7,3 +7,4 @@ chatbot_state.db**
 faiss_index/
 *.pdf
 .kiro
+*.db

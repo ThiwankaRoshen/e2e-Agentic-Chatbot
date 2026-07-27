@@ -1,8 +1,11 @@
-# Version control
-.git
-.gitignore
-
-# Environment files
+__pycache__/
+*.pyc
+.venv/
+.git/
 .env
-.env.local
-.env.*.local
+chroma_db/
+uploads/
+Notebooks/
+frontend/
+*.db
+.pytest_cache/
