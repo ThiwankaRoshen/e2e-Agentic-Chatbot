@@ -94,7 +94,7 @@ export function AssistantMessage({
       <div className="flex w-full flex-col gap-2">
         {isToolResult ? (
           <>
-            <ToolResult message={message} />
+            <ToolResult message={message as import("@/lib/types").ToolMessageType} />
             <Interrupt
               interrupt={threadInterrupt}
               isLastMessage={isLastMessage}

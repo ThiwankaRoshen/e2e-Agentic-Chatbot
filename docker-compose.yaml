@@ -1,0 +1,33 @@
+services:
+  backend:
+    image: e2e_agentic_chatbot_rest
+    container_name: agent-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./uploads:/app/uploads
+      - sqlite-data:/app/data
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+  frontend:
+    image: e2e_agentic_chatbot_frontend
+    container_name: agent-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    networks:
+      - agent-net
+    restart: unless-stopped
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  sqlite-data:
