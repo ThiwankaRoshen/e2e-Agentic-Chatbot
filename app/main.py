@@ -11,14 +11,26 @@ Startup
 Shutdown
 --------
 1. Dispose the SQLAlchemy engine (closes connection pool)
+
+Windows note
+------------
+psycopg (v3) async mode is incompatible with the Windows default ProactorEventLoop.
+We switch to SelectorEventLoop before anything else runs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+
+# ── Windows event loop fix ────────────────────────────────────────────────────
+# psycopg v3 requires SelectorEventLoop on Windows; the default is ProactorEventLoop.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,12 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         # 1. SQLAlchemy — metadata database
         engine = build_engine()
-        await create_tables(engine)
+        # await create_tables(engine) # alembic use 
         app.state.db_engine = engine
         app.state.db_session_factory = build_session_factory(engine)
 
-        # 2. LangGraph agent
-        app.state.agent = await create_chatbot_agent()
+        # 2. LangGraph agent + checkpointer connection pool
+        app.state.agent, app.state.checkpointer_pool = await create_chatbot_agent()
 
         # 3. HITL interrupt bus
         app.state.interrupt_bus = InterruptBus()
@@ -65,6 +77,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown
+    if getattr(app.state, "checkpointer_pool", None) is not None:
+        await app.state.checkpointer_pool.close()
+        logger.info("Checkpointer connection pool closed.")
+
     if getattr(app.state, "db_engine", None) is not None:
         await app.state.db_engine.dispose()
         logger.info("Database engine disposed.")
@@ -107,3 +123,10 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+# ── Dev entrypoint ────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    # loop="asyncio" ensures SelectorEventLoop is used on Windows
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True, loop="asyncio")

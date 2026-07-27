@@ -53,6 +53,12 @@ class Settings(BaseSettings):
             "Defaults to SQLite. Swap to postgresql+asyncpg://... for Postgres."
         ),
     )
+    DATABASE_URL_FOR_CHECKPOINTER: str = Field(
+        default="chatbot_state.db",
+        description=(
+            "database URL used by the LangGraph checkpointer"
+        ),
+    )
     CHROMA_PATH: str = Field(
         default="./chroma_db",
         description="Directory where ChromaDB persists its data",
