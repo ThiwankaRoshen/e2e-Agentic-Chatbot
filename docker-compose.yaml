@@ -1,7 +1,31 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: agent-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - agent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     image: e2e_agentic_chatbot_rest
     container_name: agent-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file:
@@ -9,7 +33,9 @@ services:
     volumes:
       - ./chroma_db:/app/chroma_db
       - ./uploads:/app/uploads
-      - sqlite-data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - agent-net
     restart: unless-stopped
@@ -17,6 +43,9 @@ services:
   frontend:
     image: e2e_agentic_chatbot_frontend
     container_name: agent-frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "5173:80"
     depends_on:
@@ -30,4 +59,4 @@ networks:
     driver: bridge
 
 volumes:
-  sqlite-data:
+  postgres-data:

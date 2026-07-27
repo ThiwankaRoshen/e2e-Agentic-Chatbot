@@ -7,6 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
+# libpq-dev is required by psycopg (v3) for the C extension (better perf).
+# Also install ca-certificates for outbound TLS (LLM API calls).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create the user BEFORE any content exists in the image. 
 RUN useradd --create-home --no-log-init --uid 1000 \
     --shell /usr/sbin/nologin appuser
@@ -27,7 +34,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --loop asyncio forces SelectorEventLoop — required by psycopg on all platforms
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]
