@@ -20,6 +20,22 @@ services:
       retries: 5
       start_period: 10s
 
+  migrate:
+    image: e2e_agentic_chatbot_rest
+    container_name: agent-migrate
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - agent-net
+    restart: "no"   # run once and exit — never restart on success or failure
+
   backend:
     image: e2e_agentic_chatbot_rest
     container_name: agent-backend
@@ -36,6 +52,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - agent-net
     restart: unless-stopped
