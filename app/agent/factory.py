@@ -28,6 +28,7 @@ from psycopg_pool import AsyncConnectionPool
 from app.agent.llm import llm
 from app.agent.tools import tools
 from app.settings import settings
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 # Uncomment to enable optional middleware:
 # from app.agent.middleware import GuardrailsMiddleware
@@ -83,10 +84,18 @@ async def create_chatbot_agent() -> tuple:
     # model = GLiNER2.from_pretrained("fastino/gliner2-multi-v1")
     # detector = Gliner2Detector(model=model, labels=["PERSON", "LOCATION"])
     # pipeline = ThreadAnonymizationPipeline(detector=detector, anonymizer=Anonymizer())
+    mcp_client = MultiServerMCPClient({
+        "blog_api": {
+            "transport": "streamable_http",
+            "url": "http://localhost:8002/mcp/",  # e.g. "http://localhost:8000/mcp/"
+            # "headers": {"Authorization": f"Bearer {token}"},
+        }
+    })
+    mcp_tools = await mcp_client.get_tools()
 
     chatbot = create_agent(
         model=llm,
-        tools=tools,
+        tools=[*tools, *mcp_tools],
         checkpointer=checkpointer,
         middleware=[
             HumanInTheLoopMiddleware(
